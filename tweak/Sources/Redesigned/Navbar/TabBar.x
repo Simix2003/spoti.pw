@@ -776,6 +776,9 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
                 NSString *identifier = [NSString stringWithFormat:@"spotifyglass.tab.%lu", (unsigned long)list.count];
                 tab = [[UITab alloc] initWithTitle:title image:glyphOf(source, NO) identifier:identifier
                             viewControllerProvider:^UIViewController *(UITab *t) { return inlinePage(t); }];
+                // Fixed + centered below: the leading cluster stays content-sized. Automatic fills the
+                // space up to the trailing circle, so two tabs stretch as wide as three would have.
+                tab.preferredPlacement = UITabPlacementFixed;
             }
             [list addObject:tab];
         }
@@ -783,6 +786,10 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
         tabs.tabs = list;
         SGLog(@"tab bar: %lu tabs on the mini player's bar, %@ in the trailing circle", (unsigned long)list.count, labelIn(sources.lastObject).text);
     }
+    // Fill (Automatic on iPhone) stretches fewer tabs across the gap to Search; Centered keeps a
+    // normal item width so the space before the trailing circle stays empty.
+    if (tabs.tabBar.itemPositioning != UITabBarItemPositioningCentered)
+        tabs.tabBar.itemPositioning = UITabBarItemPositioningCentered;
 
     // Spotify's selected tab shows its filled icon, as UITabBarItem's selectedImage did on the other bar.
     // Minimized, UIKit leads with the selected tab, or with the last one picked while the trailing one is
