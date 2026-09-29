@@ -11,6 +11,12 @@ Entries for the `beta-simix-overnight` fork. Release Please does not version the
 * **Changed:** The Search field and the Cancel button in the same row, when that row is shorter than 52pt, are grown to 52pt (the Search header's field alone is 48pt in `trees/search.txt` and is left as it is). Lists and Mod Settings are not walked.
 * **Known limits:** Not compiled (no Theos/iOS SDK here) and not run on a phone. The open-search row is found by a field (`UITextField`, `UISearchBar`, `SearchHeaderFind.SearchBar`, or an identifier containing `SearchField`) sharing a wide, short parent with a control whose title, accessibility label, or identifier matches the system search bar's Cancel title (Italian "Annulla" on an Italian phone) or contains "cancel". A Cancel Spotify draws some other way is not grown. Focusing calls Spotify's search button; if that button is not the field the second tap used to open, the system search tab's own field is what focuses, and typing still depends on Spotify. The accent-coloured circle is only restyled for the system search tab (mini player on, iOS 26).
 
+### Now Playing menu
+
+* **Fixed:** The redesigned player's ⋯ opens its glass menu on the tap, on the rows kept from the last menu (`spotifyglass.redesign.player.menuRows`), instead of waiting until Spotify's sheet has begun presenting. That wait was the lag. The sheet still opens underneath, out of sight, and is where the rows are read from.
+* **Changed:** While the sheet's table is still filling, it is looked at every 1/120 s rather than every 0.05 s, and the first look happens as soon as the table is taken over rather than one interval later. A `CADisplayLink` is not used. The 4 s give-up (`kRowsWait`), after which a sheet whose rows never arrive is shown as Spotify drew it, is unchanged.
+* **Known limits:** A sheet presented while the early menu is up dismisses that menu; the dismiss is put back on the next turn, so one frame can still flash. Not compiled and not run in `harness/playermenu/` (that harness needs the iOS simulator). The first menu of a launch has no cached rows, so it opens on the loading row until Spotify's table can be read.
+
 ## [0.22.0](https://github.com/skopevoj/spoti.pw/compare/v0.21.1...v0.22.0) (2026-09-23)
 
 
