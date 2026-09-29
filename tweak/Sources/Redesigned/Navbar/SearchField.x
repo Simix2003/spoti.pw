@@ -13,6 +13,7 @@
 // so later. So the two setters are refused for as long as the field is a capsule.
 #import "Core/SGCore.h"
 #import "Diagnostics/Diagnostics.h"
+#import "Redesigned/Kit/SGRRestyle.h"
 
 // Spotify's glyph view, resolved at runtime; declared on UIView so the call and the hook below
 // share one declaration.
@@ -91,6 +92,203 @@ static void traceFieldArriving(UIView *button) {
     if (now - last < 2.5) return;
     last = now;
     sampleField(button, 0);
+}
+
+// The Search header's field is 48pt (trees/search.txt). The row it shares with Cancel once search is
+// open is shorter than that, so both grow to the header's height. Anything already there is left.
+static const CGFloat kSearchChromeHeight = 52;
+static NSInteger sgr_focusGeneration;
+
+static NSString *cancelWord(void) {
+    static NSString *word;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        UISearchBar *bar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, 320, 56)];
+        bar.showsCancelButton = YES;
+        [bar layoutIfNeeded];
+        __block NSString *title = nil;
+        SGForEachView(bar, ^(UIView *v) {
+            if (title || ![v isKindOfClass:UIButton.class]) return;
+            NSString *text = [(UIButton *)v currentTitle];
+            if (text.length) title = text;
+        });
+        word = title.length ? [title copy] : @"Cancel";
+    });
+    return word;
+}
+
+static BOOL isCancelControl(UIView *view) {
+    if (view.bounds.size.width < 24 || view.bounds.size.width > 160 || view.bounds.size.height < 16) return NO;
+    NSString *ident = view.accessibilityIdentifier ?: @"";
+    if ([ident rangeOfString:@"cancel" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    NSString *word = cancelWord();
+    NSString *label = view.accessibilityLabel;
+    if (label.length && [label rangeOfString:word options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    if ([view isKindOfClass:UIButton.class]) {
+        NSString *title = [(UIButton *)view currentTitle];
+        if (title.length && [title rangeOfString:word options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    }
+    return NO;
+}
+
+static BOOL isField(UIView *view) {
+    if ([view isKindOfClass:UITextField.class] || [view isKindOfClass:UISearchBar.class]) return YES;
+    NSString *ident = view.accessibilityIdentifier ?: @"";
+    return [ident isEqualToString:@"SearchHeaderFind.SearchBar"] || [ident rangeOfString:@"SearchField" options:NSCaseInsensitiveSearch].location != NSNotFound;
+}
+
+static BOOL insideSettings(UIView *view) {
+    for (UIResponder *responder = view; responder; responder = responder.nextResponder) {
+        if ([responder isKindOfClass:UIViewController.class] && [NSStringFromClass(responder.class) containsString:@"SGPage"]) return YES;
+    }
+    return NO;
+}
+
+static void growToChrome(UIView *view) {
+    if (!view || view.bounds.size.height < 16 || view.bounds.size.height >= kSearchChromeHeight - 0.5) return;
+    for (NSLayoutConstraint *constraint in view.constraints) {
+        if (constraint.firstItem == view && constraint.firstAttribute == NSLayoutAttributeHeight && !constraint.secondItem
+            && constraint.constant > 0 && constraint.constant < kSearchChromeHeight) {
+            constraint.constant = kSearchChromeHeight;
+        }
+    }
+    CGRect frame = view.frame;
+    CGFloat delta = kSearchChromeHeight - frame.size.height;
+    frame.origin.y -= delta / 2.0;
+    frame.size.height = kSearchChromeHeight;
+    view.frame = frame;
+    if (view.layer.cornerRadius > 0 && view.layer.cornerRadius < kSearchChromeHeight / 2.0) {
+        view.layer.cornerRadius = kSearchChromeHeight / 2.0;
+        view.layer.cornerCurve = kCACornerCurveContinuous;
+    }
+}
+
+static void raiseRow(UIView *row) {
+    growToChrome(row);
+    SGForEachView(row, ^(UIView *view) {
+        if (view != row && (isField(view) || isCancelControl(view))) growToChrome(view);
+    });
+}
+
+static BOOL rowIsSearchChrome(UIView *view) {
+    if (view.bounds.size.width < 200 || view.bounds.size.height < 16 || view.bounds.size.height >= kSearchChromeHeight - 0.5) return NO;
+    if (insideSettings(view)) return NO;
+    __block BOOL field = NO, cancel = NO;
+    SGForEachView(view, ^(UIView *sub) {
+        if (sub != view && isField(sub)) field = YES;
+        if (sub != view && isCancelControl(sub)) cancel = YES;
+    });
+    return field && cancel;
+}
+
+static void raiseSearchChrome(UIView *root, BOOL force) {
+    if (!root) return;
+    static CFTimeInterval last;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (!force && now - last < 0.1) return;
+    last = now;
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
+    NSUInteger seen = 0;
+    while (queue.count && seen < 500) {
+        UIView *view = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        seen++;
+        if (view.hidden || view.alpha < 0.01) continue;
+        if ([view isKindOfClass:UICollectionView.class] || [view isKindOfClass:UITableView.class]) continue;
+        if ([view isKindOfClass:UISearchBar.class] && !insideSettings(view)) {
+            UISearchBar *bar = (UISearchBar *)view;
+            growToChrome(bar);
+            growToChrome(bar.searchTextField);
+            for (UIView *sub in bar.subviews) {
+                SGForEachView(sub, ^(UIView *candidate) {
+                    if (isCancelControl(candidate)) growToChrome(candidate);
+                });
+            }
+        }
+        if (rowIsSearchChrome(view)) raiseRow(view);
+        [queue addObjectsFromArray:view.subviews];
+    }
+}
+
+void SGRRaiseSearchChrome(UIView *root) {
+    raiseSearchChrome(root, NO);
+}
+
+static UIView *searchButtonIn(UIView *root) {
+    __block UIView *found = nil;
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
+    while (queue.count && !found) {
+        UIView *view = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        if (view != root && ([view isKindOfClass:UICollectionView.class] || [view isKindOfClass:UITableView.class])) continue;
+        if ([view.accessibilityIdentifier isEqualToString:@"SearchHeaderFind.SearchBar"] && view.window && !view.hidden && view.alpha > 0.01)
+            found = view;
+        else [queue addObjectsFromArray:view.subviews];
+    }
+    return found;
+}
+
+static BOOL searchFieldEditing(UIView *root) {
+    __block BOOL editing = NO;
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
+    NSUInteger seen = 0;
+    while (queue.count && !editing && seen < 500) {
+        UIView *view = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        seen++;
+        if ([view isKindOfClass:UICollectionView.class] || [view isKindOfClass:UITableView.class]) continue;
+        if ([view isKindOfClass:UITextField.class] && ((UITextField *)view).isFirstResponder) editing = YES;
+        else [queue addObjectsFromArray:view.subviews];
+    }
+    return editing;
+}
+
+static void focusAttempt(NSInteger generation, int attempt) {
+    if (generation != sgr_focusGeneration) return;
+    UIWindow *window = nil;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *candidate in ((UIWindowScene *)scene).windows) {
+            if (!candidate.hidden && candidate.windowLevel == UIWindowLevelNormal) window = candidate;
+        }
+    }
+    if (!window) {
+        if (attempt >= 12) return;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            focusAttempt(generation, attempt + 1);
+        });
+        return;
+    }
+    if (searchFieldEditing(window)) {
+        raiseSearchChrome(window, YES);
+        return;
+    }
+    UIView *button = searchButtonIn(window);
+    if (button) {
+        static NSInteger activated;
+        if (activated != generation) {
+            activated = generation;
+            SGLog(@"search field: focusing %@", button.accessibilityIdentifier);
+            SGRActivate(button);
+        }
+        raiseSearchChrome(window, YES);
+    }
+    if (attempt >= 12) {
+        if (!button) SGLog(@"search field: not on screen %.2f s after the Search tab", 0.05 * attempt);
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        focusAttempt(generation, attempt + 1);
+    });
+}
+
+void SGRFocusSearchPage(void) {
+    NSInteger generation = ++sgr_focusGeneration;
+    dispatch_async(dispatch_get_main_queue(), ^{ focusAttempt(generation, 0); });
+}
+
+void SGRCancelSearchFocus(void) {
+    sgr_focusGeneration++;
 }
 
 static void styleSearchField(UIView *button) {

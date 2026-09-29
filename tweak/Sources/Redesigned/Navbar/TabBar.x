@@ -136,6 +136,34 @@ static UIImage *glyphOf(UIView *item, BOOL active) {
     return size.width >= 2 ? renderLayer(live.layer, size) : nil;
 }
 
+// The search circle keeps the accent on its icon after another tab is selected when the image is a
+// template: UIKit tints that button with the bar's tint and does not put it back. The idle icon is
+// drawn in Spotify's own idle grey, the selected one in the accent, both as original images.
+static UIImage *searchTabImage(UIView *item, BOOL active) {
+    UIImage *base = glyphOf(item, active);
+    if (!base) return nil;
+    UIColor *ink = active ? SGRAccent() : [UIColor colorWithWhite:0xB3 / 255.0 alpha:1];
+    static UIImage *onImage, *offImage, *onBase, *offBase;
+    static UIColor *onInk;
+    if (active) {
+        if (onImage && onBase == base && [onInk isEqual:ink]) return onImage;
+        onBase = base;
+        onInk = ink;
+        onImage = [base imageWithTintColor:ink renderingMode:UIImageRenderingModeAlwaysOriginal];
+        return onImage;
+    }
+    if (offImage && offBase == base) return offImage;
+    offBase = base;
+    offImage = [base imageWithTintColor:ink renderingMode:UIImageRenderingModeAlwaysOriginal];
+    return offImage;
+}
+
+static BOOL isSearchItem(UIView *item) {
+    id icon = encoreIconOf(iconIn(item));
+    NSString *name = [icon respondsToSelector:@selector(name)] ? [icon name] : nil;
+    return name.length && [name rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound;
+}
+
 #pragma mark - passing a tap on
 
 // NavigationUI_TabBarImpl's TabBarItemElementUI answers a tap recognizer (-handleTap), so the tap is
@@ -207,9 +235,16 @@ static UITabBarItem *itemAtPoint(UITabBar *bar, CGPoint point) {
 - (void)tabBar:(UITabBar *)tabBar didSelectItem:(UITabBarItem *)item {
     NSUInteger index = [self.items indexOfObject:item];
     if (index == NSNotFound || index >= self.sources.count) return;
-    SGRTabPicked(self.sources[index]);
+    UIView *source = self.sources[index];
+    BOOL search = isSearchItem(source);
+    BOOL already = isActive(source);
+    SGRTabPicked(source);
     // Home tapped while on Home pops Spotify's stack, which would take Mod Settings straight off it.
-    if (!self.holding) forwardTap(self.sources[index]);
+    if (!self.holding) forwardTap(source);
+    // Already on Search, Spotify's own tap focuses the field. Coming from another tab, that tap only
+    // opens the page, so the field is asked for once the page has it.
+    if (search && !already && !self.holding) SGRFocusSearchPage();
+    else if (!search) SGRCancelSearchFocus();
     // Spotify repaints its labels a moment later; a tap it did not take snaps the selection back.
     UIView *stockBar = self.stockBar;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -454,6 +489,13 @@ static void syncBar(UIView *stockBar) {
         if (!selected && (modTab != NSNotFound ? i == modTab : isActive(sources[i]))) selected = item;
     }
     if (selected && bar.selectedItem != selected) bar.selectedItem = selected;
+    if (selected) {
+        NSUInteger index = [bar.items indexOfObject:selected];
+        if (index < sources.count && isSearchItem(sources[index])) {
+            UIView *page = containerOf(stockBar).view;
+            if (page) SGRRaiseSearchChrome(page);
+        }
+    }
     // An icon view Spotify has not built yet is looked for again shortly, not on the next touch.
     static NSUInteger retries;
     if (missing && retries++ < 40) {
@@ -642,9 +684,14 @@ static void nameScrollView(void) {
     NSUInteger index = [self.tabs indexOfObject:tab];
     self.leadRedirected = self.touchedLead && [self isMiddle:index];
     if (self.leadRedirected) index = 0;
-    if (index < self.sources.count) SGRTabPicked(self.sources[index]);
+    UIView *source = index < self.sources.count ? self.sources[index] : nil;
+    BOOL search = isSearchItem(source);
+    BOOL already = isActive(source);
+    if (source) SGRTabPicked(source);
     // Home tapped while on Home pops Spotify's stack, which would take Mod Settings straight off it.
-    if (index < self.sources.count && !self.holding) forwardTap(self.sources[index]);
+    if (source && !self.holding) forwardTap(source);
+    if (search && !already && !self.holding) SGRFocusSearchPage();
+    else if (!search) SGRCancelSearchFocus();
     UIView *stockBar = self.stockBar;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (stockBar) syncBar(stockBar);
@@ -770,7 +817,11 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
                 UISearchTab *search = [[UISearchTab alloc] initWithViewControllerProvider:^UIViewController *(UITab *t) { return inlinePage(t); }];
                 search.title = title;
                 search.image = glyphOf(source, NO);
-                search.automaticallyActivatesSearch = NO;
+                // Button appearance (HIG): selecting the search circle focuses its field. Left at
+                // NO, the first tap only selects the tab and opens the page, and the field waits
+                // for a second tap. Only the Search tab: the trailing circle is whichever tab is
+                // last, and Create should not open a field.
+                search.automaticallyActivatesSearch = isSearchItem(source);
                 tab = search;
             } else {
                 NSString *identifier = [NSString stringWithFormat:@"spotifyglass.tab.%lu", (unsigned long)list.count];
@@ -808,7 +859,12 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
         UITab *tab = tabs.tabs[i];
         BOOL active = modTab != NSNotFound ? i == modTab : isActive(sources[i]);
         if (active && !selected) selected = tab;
-        UIImage *image = glyphOf(sources[i], active);
+        if ([tab isKindOfClass:UISearchTab.class]) {
+            UISearchTab *search = (UISearchTab *)tab;
+            BOOL want = isSearchItem(sources[i]);
+            if (search.automaticallyActivatesSearch != want) search.automaticallyActivatesSearch = want;
+        }
+        UIImage *image = [tab isKindOfClass:UISearchTab.class] ? searchTabImage(sources[i], active) : glyphOf(sources[i], active);
         missing |= !image;
         if (lead && [tabs isMiddle:i]) image = lead;
         if (image && tab.image != image) tab.image = image;
@@ -816,6 +872,13 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
     if (selected && tabs.selectedTab != selected) {
         SGLog(@"tab bar: selection follows Spotify to %@", selected.title);
         tabs.selectedTab = selected;
+    }
+    if (selected) {
+        NSUInteger index = [tabs.tabs indexOfObject:selected];
+        if (index < sources.count && isSearchItem(sources[index])) {
+            UIView *page = containerOf(stockBar).view;
+            if (page) SGRRaiseSearchChrome(page);
+        }
     }
     if (!sg_pageScroll.window) searchPageScroll();
     static NSUInteger retries;

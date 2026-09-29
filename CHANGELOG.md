@@ -1,5 +1,16 @@
 # Changelog
 
+## beta-simix
+
+Entries for the `beta-simix-overnight` fork. Release Please does not version these; they are written so each one can accompany an upstream pull request. Nothing here is compiled or run on a device.
+
+### Search tab
+
+* **Fixed:** The first tap on Search opens the Search page and focuses the field. With the mini player on, the trailing circle is a system search tab that was left with `automaticallyActivatesSearch` off, so the first tap only selected it and the field waited for a second tap. Search now focuses on selection. On either bar, a tap that arrives from another tab also activates Spotify's `SearchHeaderFind.SearchBar` once that button is on screen (Encore, fired the way the kit fires a concealed control). Leaving Search cancels a focus that has not landed yet.
+* **Fixed:** The trailing search circle no longer stays in the accent colour after another tab is selected. Its icon was a template image, and UIKit keeps that button on the bar's tint. The idle icon is now drawn in Spotify's idle grey (`#B3B3B3`) and the selected icon in the accent, both as original images, so the tint cannot stick.
+* **Changed:** The Search field and the Cancel button in the same row, when that row is shorter than 52pt, are grown to 52pt (the Search header's field alone is 48pt in `trees/search.txt` and is left as it is). Lists and Mod Settings are not walked.
+* **Known limits:** Not compiled (no Theos/iOS SDK here) and not run on a phone. The open-search row is found by a field (`UITextField`, `UISearchBar`, `SearchHeaderFind.SearchBar`, or an identifier containing `SearchField`) sharing a wide, short parent with a control whose title, accessibility label, or identifier matches the system search bar's Cancel title (Italian "Annulla" on an Italian phone) or contains "cancel". A Cancel Spotify draws some other way is not grown. Focusing calls Spotify's search button; if that button is not the field the second tap used to open, the system search tab's own field is what focuses, and typing still depends on Spotify. The accent-coloured circle is only restyled for the system search tab (mini player on, iOS 26).
+
 ## [0.22.0](https://github.com/skopevoj/spoti.pw/compare/v0.21.1...v0.22.0) (2026-09-23)
 
 
