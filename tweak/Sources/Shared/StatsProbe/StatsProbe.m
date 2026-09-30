@@ -1,12 +1,12 @@
 // What a running Spotify already has loaded for Statistiche di ascolto, written down without
 // asking it for more. No request is sent and no setter, reload, or cell-for-index is called.
 //
-// The pill is shown from the visible page's class, title, and header labels (Italian and the
-// English equivalents). The dump writes the file as it goes and only reads UIView / UIViewController
-// properties (text, frames, accessibility, image size). It does not walk arbitrary ivars.
+// The pill is off until Mod → Debug → Stats probe turns SGKeyStatsProbe on and Spotify restarts.
+// While on, the pill is shown from the visible page's class and title (no view-tree walk on every
+// screen). The dump writes the file as it goes and only reads UIView / UIViewController properties
+// (text, frames, accessibility, image size). It does not walk arbitrary ivars.
 #import "StatsProbe.h"
 #import "Core/SGCore.h"
-#import "Settings/SGPageStyle.h"
 
 #ifndef SG_BUILD
 #define SG_BUILD "unknown"
@@ -229,27 +229,47 @@ static BOOL subtreeMatches(UIViewController *vc, UIView *page, NSUInteger depth)
     return NO;
 }
 
-static NSString *matchReason(UIViewController *leaf) {
-    if (!leaf) return nil;
-    if (classMatch(NSStringFromClass(object_getClass(leaf)))) return @"class";
-    if (phraseMatch(controllerTitle(leaf))) return @"title";
+// Light match for the pill timer: class and title only. Walking the view tree on every
+// viewDidAppear (and every 1.2 s) was crashing Spotify during teardown; @try cannot catch that.
+static NSString *lightMatchReason(UIViewController *vc, NSUInteger depth) {
+    if (!vc || depth > 4) return nil;
+    if (classMatch(NSStringFromClass(object_getClass(vc)))) return @"class";
+    if (phraseMatch(controllerTitle(vc))) return @"title";
     @try {
-        if (leaf.isViewLoaded && (phraseMatch(leaf.view.accessibilityLabel) || phraseMatch(leaf.view.accessibilityIdentifier))) return @"accessibility";
+        if (vc.isViewLoaded && (phraseMatch(vc.view.accessibilityLabel) || phraseMatch(vc.view.accessibilityIdentifier))) return @"accessibility";
+        if (phraseMatch(vc.navigationItem.titleView.accessibilityLabel)) return @"title";
     } @catch (NSException *ex) {
     }
-    UIView *page = leaf.isViewLoaded ? leaf.view : nil;
-    if (subtreeMatches(leaf, page, 0)) return @"child";
-    if (page) {
-        NSUInteger visited = 0;
-        BOOL inList = NO;
-        if (labelTreeMatches(page, page, 0, &visited, &inList)) return @"header";
+    for (UIViewController *child in vc.childViewControllers) {
+        NSString *reason = lightMatchReason(child, depth + 1);
+        if (reason) return [@"child-" stringByAppendingString:reason];
     }
     return nil;
 }
 
-static UIViewController *statsPage(NSString **reasonOut) {
+// Full match for a tap: also walks header labels once, under @try, after the file is open.
+static NSString *deepMatchReason(UIViewController *leaf) {
+    NSString *reason = lightMatchReason(leaf, 0);
+    if (reason) return reason;
+    UIView *page = nil;
+    @try { page = leaf.isViewLoaded ? leaf.view : nil; }
+    @catch (NSException *ex) { page = nil; }
+    if (subtreeMatches(leaf, page, 0)) return @"child";
+    if (page) {
+        NSUInteger visited = 0;
+        BOOL inList = NO;
+        @try {
+            if (labelTreeMatches(page, page, 0, &visited, &inList)) return @"header";
+        } @catch (NSException *ex) {
+            return nil;
+        }
+    }
+    return nil;
+}
+
+static UIViewController *statsPage(NSString **reasonOut, BOOL deep) {
     UIViewController *leaf = visibleLeaf();
-    NSString *reason = matchReason(leaf);
+    NSString *reason = deep ? deepMatchReason(leaf) : lightMatchReason(leaf, 0);
     if (reasonOut) *reasonOut = reason;
     return reason ? leaf : nil;
 }
@@ -593,7 +613,7 @@ static void dumpNow(void) {
     probeStep(@"open");
     NSString *reason = nil;
     UIViewController *leaf = nil;
-    @try { leaf = statsPage(&reason); }
+    @try { leaf = statsPage(&reason, YES); }
     @catch (NSException *ex) {
         sg_busy = NO;
         SGLog(@"stats probe: stopped (%@)", ex.name);
@@ -747,7 +767,7 @@ static void refreshProbe(void) {
         page = sg_cacheMatch ? leaf : nil;
         reason = sg_cacheReason;
     } else {
-        @try { page = statsPage(&reason); }
+        @try { page = statsPage(&reason, NO); }
         @catch (NSException *ex) { page = nil; }
         sg_cacheLeaf = leaf;
         sg_cacheTitle = leafTitle;
@@ -834,12 +854,15 @@ void SGStatsProbeShareLast(void) {
     }
     NSString *path = sg_lastPath ?: newestProbePath();
     if (!path || ![NSFileManager.defaultManager fileExistsAtPath:path]) {
-        alert(@"No stats probe yet", @"Open Statistiche di ascolto and tap Probe, then share the file.");
+        alert(@"No stats probe yet", @"Turn on Show Probe pill under Mod → Debug → Stats probe, restart, open Statistiche di ascolto, tap Probe, then share.");
         return;
     }
     presentFile(path);
 }
 
 __attribute__((constructor)) static void SGStatsProbeInit(void) {
+    // Off until the Debug page asks for it. The old always-on swizzle walked every screen
+    // and crashed Spotify (SIGSEGV during view teardown, not an NSException).
+    if (!SGHidden(SGKeyStatsProbe)) return;
     installProbe();
 }

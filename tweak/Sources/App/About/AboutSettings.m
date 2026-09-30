@@ -105,7 +105,7 @@ UIViewController *SGAboutPage(void) {
     logFile.refreshOn = SGLogExportDidChangeNotification;
     [sections addObject:SGSection(@"Debug", @[
         withSymbol(SGPageRow(@"Jam probe", ^UIViewController *{ return SGJamProbePage(); }), @"ladybug"),
-        withSymbol(SGActionRow(@"Share last stats probe", @"The newest stats dump in Documents", ^{ SGStatsProbeShareLast(); }), @"chart.bar.xaxis"),
+        withSymbol(SGPageRow(@"Stats probe", ^UIViewController *{ return SGStatsProbePage(); }), @"chart.bar.xaxis"),
         logFile,
         withSymbol(SGActionRow(@"Share logs", @"AirDrop, Files, or Messages", ^{ shareLogs(); }), @"square.and.arrow.up"),
         withSymbol(SGActionRow(@"Clear logs", nil, ^{ confirmClearLogs(); }), @"trash"),
