@@ -8,6 +8,8 @@ Release Please still owns `CHANGELOG.beta.md`.
 
 ### Features
 
+* Mod → Debug → Share logs sends the on-phone log by AirDrop, Files, or Messages, and Clear logs deletes it; the Log file row shows the size and the Build (`SGLog.m`, `AboutSettings.m`, `docs/logs.md`) ([9d1e959](https://github.com/Simix2003/spoti.pw/commit/9d1e9599e17b3568d925fa617bfa9161cdb2ca9b))
+* Jam probe, under Mod → Debug, writes a read-only dump of Jam-like classes and the screen after a 3 second wait, then shares that file; it does not join, skip, or call action methods (`JamProbe.m`, `AboutSettings.m`, `docs/jam-probe.md`) ([ff3b7fd](https://github.com/Simix2003/spoti.pw/commit/ff3b7fd86ad773684964caadf1130d01fa4dd7f2))
 * a mixed playlist (one whose curation row has the Mix pill) sweeps a highlight across the white Play capsule; Reduce Motion draws nothing, and the sweep stops while the capsule is off screen (`PlaylistMenu.x`, `PlaylistHeader.x`, `SGRActionRow.m`) ([55f0102](https://github.com/Simix2003/spoti.pw/commit/55f0102edeadc31e4c146f729326fa3791a2cb60))
 * the first touch on the Now Playing time bar shows a system slider thumb and forwards the drag to Spotify's own slider; `trackConfiguration` is not declared in this checkout, so the system default is left in place and the thumb hides again when the finger lifts (`PlayerControls.x`) ([63f007b](https://github.com/Simix2003/spoti.pw/commit/63f007b419591796c040c75435eb1a33e51529dd))
 
