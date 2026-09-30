@@ -1625,52 +1625,127 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
     nameScrollView();
 }
 
-// The scroll view UIKit should minimize the bar by is Spotify's page in front: a vertical list over most
-// of the screen inside the tab bar container, the innermost when one holds another. Horizontal pagers
-// are left out. Spotify's first page is on screen before the bar is, so the container is searched once
-// the bar is up; later pages are taken as they come on screen, and whichever list a finger starts
-// dragging up or down is taken on the spot, in case the guess was another.
+// Minimize follows whatever vertical list is moving. No page allow list: Home, Search, Library,
+// playlists, albums, and anything else that scrolls. Horizontal shelves and the glass host are
+// ignored; everything else that moves on Y retargets UIKit's contentScrollView immediately.
+static BOOL isPrimarilyHorizontal(UIScrollView *scroll) {
+    CGFloat bw = scroll.bounds.size.width, bh = scroll.bounds.size.height;
+    CGFloat cw = scroll.contentSize.width, ch = scroll.contentSize.height;
+    if (bw < 1 || bh < 1) return NO;
+    return cw > bw + 8 && ch <= bh + 8;
+}
+
+static BOOL canDriveMinimize(UIScrollView *scroll) {
+    if (!sg_inline || !scroll) return NO;
+    if (!scroll.window || scroll.hidden || scroll.alpha < 0.01) return NO;
+    if (scroll.pagingEnabled) return NO;
+    if ([scroll isDescendantOfView:sg_inlineHost]) return NO;
+    if (isPrimarilyHorizontal(scroll)) return NO;
+    if (scroll.bounds.size.height < 64) return NO;
+    UIView *container = sg_inlineHost.superview;
+    if (container && [scroll isDescendantOfView:container]) return YES;
+    // Content that is not under TabBarContainer still counts if it sits above the glass bar.
+    UITabBar *bar = sg_inlineTabs.tabBar;
+    if (!bar.window || scroll.window != bar.window) return NO;
+    CGRect scrollInWindow = [scroll convertRect:scroll.bounds toView:nil];
+    CGRect barInWindow = [bar convertRect:bar.bounds toView:nil];
+    return CGRectGetMidY(scrollInWindow) < CGRectGetMinY(barInWindow) - 8;
+}
+
+static BOOL isVerticalPageScroll(UIScrollView *scroll) {
+    return canDriveMinimize(scroll);
+}
+
 static BOOL isPageScroll(UIScrollView *scroll) {
-    if (!sg_inline) return NO;
-    SGRInlineHost *host = sg_inlineHost;
-    UIView *container = host.superview;
-    if (!container || !scroll.window || scroll.hidden || scroll.alpha < 0.01 || scroll.pagingEnabled) return NO;
-    if (![scroll isDescendantOfView:container] || [scroll isDescendantOfView:host]) return NO;
-    // A playlist list under a tall header is still the page list when it covers about a quarter of the screen.
-    if (scroll.bounds.size.height < container.bounds.size.height * 0.25) return NO;
-    // Prefer lists that can actually scroll; an empty shell of the right size is left for a later pass.
-    if (scroll.contentSize.height + 8 < scroll.bounds.size.height && scroll.contentOffset.y < 1) return NO;
-    return YES;
+    return canDriveMinimize(scroll);
+}
+
+static BOOL isNearerFront(UIView *a, UIView *b, UIView *container) {
+    if (!b) return YES;
+    if (!a) return NO;
+    if (!container) return YES;
+    NSMutableArray<UIView *> *pathA = [NSMutableArray array];
+    NSMutableArray<UIView *> *pathB = [NSMutableArray array];
+    for (UIView *v = a; v && v != container; v = v.superview) [pathA insertObject:v atIndex:0];
+    for (UIView *v = b; v && v != container; v = v.superview) [pathB insertObject:v atIndex:0];
+    NSUInteger n = MIN(pathA.count, pathB.count);
+    for (NSUInteger i = 0; i < n; i++) {
+        if (pathA[i] == pathB[i]) continue;
+        UIView *parent = i > 0 ? pathA[i - 1] : container;
+        NSUInteger ia = [parent.subviews indexOfObjectIdenticalTo:pathA[i]];
+        NSUInteger ib = [parent.subviews indexOfObjectIdenticalTo:pathB[i]];
+        return ia >= ib;
+    }
+    return pathA.count >= pathB.count;
+}
+
+static UIScrollView *scrollFromHit(UIView *root, CGPoint point) {
+    UIView *hit = [root hitTest:point withEvent:nil];
+    if (!hit || hit == sg_inlineHost || [hit isDescendantOfView:sg_inlineHost]) return nil;
+    for (UIView *v = hit; v && v != root; v = v.superview) {
+        if ([v isKindOfClass:UIScrollView.class] && canDriveMinimize((UIScrollView *)v)) return (UIScrollView *)v;
+    }
+    return nil;
 }
 
 static void takePageScroll(UIScrollView *scroll, NSString *why) {
+    if (!scroll || !canDriveMinimize(scroll)) return;
     if (sg_pageScroll == scroll) return;
     sg_pageScroll = scroll;
     static NSUInteger logged;
-    if (logged++ < 20) SGLog(@"tab bar: follows %@ %p %@ (%@)", NSStringFromClass(scroll.class), scroll, NSStringFromCGRect(scroll.frame), why);
+    if (logged++ < 40) SGLog(@"tab bar: follows %@ %p %@ (%@)", NSStringFromClass(scroll.class), scroll, NSStringFromCGRect(scroll.frame), why);
     nameScrollView();
 }
 
 static void considerScrollView(UIScrollView *scroll) {
-    if (!isPageScroll(scroll)) return;
+    if (!canDriveMinimize(scroll)) return;
     UIScrollView *current = sg_pageScroll;
     if (current == scroll) return;
-    // Prefer the nested list over a parent that also qualifies.
-    if (current.window && [current isDescendantOfView:scroll]) return;
-    takePageScroll(scroll, [scroll isDescendantOfView:current] ? @"inner list" : @"came on screen");
+    UIView *container = sg_inlineHost.superview;
+    if (current.window && canDriveMinimize(current) && [scroll isDescendantOfView:current]) return;
+    if (current.window && [current isDescendantOfView:scroll]) {
+        takePageScroll(scroll, @"outer page list");
+        return;
+    }
+    if (current.window && canDriveMinimize(current) && container && !isNearerFront(scroll, current, container)) return;
+    takePageScroll(scroll, @"came on screen");
 }
+
+static BOOL sg_forceScrollSearch;
 
 static void searchPageScroll(void) {
     if (!sg_inline) return;
     UIView *container = sg_inlineHost.superview;
-    if (!container) return;
-    // Keep hunting while unlinked; once linked, do not scan more than once a second.
+    UIView *root = container ?: sg_inlineTabs.view.window;
+    if (!root) return;
+    if (sg_pageScroll && !canDriveMinimize(sg_pageScroll)) {
+        static NSUInteger dropped;
+        if (dropped++ < 12) SGLog(@"tab bar: drops %@ %p (cannot drive minimize)",
+                                  NSStringFromClass(sg_pageScroll.class), sg_pageScroll);
+        sg_pageScroll = nil;
+    }
     static CFTimeInterval last;
     CFTimeInterval now = CACurrentMediaTime();
-    CFTimeInterval gap = sg_pageScroll.window ? 1.0 : 0.25;
-    if (now - last < gap) return;
+    CFTimeInterval gap = sg_pageScroll.window ? 0.75 : 0.2;
+    if (!sg_forceScrollSearch && now - last < gap) return;
+    sg_forceScrollSearch = NO;
     last = now;
-    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:container];
+
+    CGFloat w = root.bounds.size.width, h = root.bounds.size.height;
+    CGPoint probes[] = {
+        CGPointMake(w * 0.5, h * 0.28),
+        CGPointMake(w * 0.5, h * 0.42),
+        CGPointMake(w * 0.5, h * 0.55),
+        CGPointMake(w * 0.5, h * 0.68),
+    };
+    for (NSUInteger i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
+        UIScrollView *front = scrollFromHit(root, probes[i]);
+        if (!front) continue;
+        takePageScroll(front, @"front hit");
+        return;
+    }
+
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
     UIScrollView *best = nil;
     NSUInteger found = 0, seen = 0;
     while (queue.count) {
@@ -1680,22 +1755,21 @@ static void searchPageScroll(void) {
         if ([view isKindOfClass:UIScrollView.class]) {
             seen++;
             UIScrollView *scroll = (UIScrollView *)view;
-            if (isPageScroll(scroll)) {
+            if (canDriveMinimize(scroll)) {
                 found++;
-                // Innermost wins: a nested list replaces its parent.
-                if (!best || [scroll isDescendantOfView:best]
-                    || (scroll.contentSize.height > best.contentSize.height && ![best isDescendantOfView:scroll])) {
-                    best = scroll;
-                }
+                if (!best) best = scroll;
+                else if ([best isDescendantOfView:scroll]) best = scroll;
+                else if ([scroll isDescendantOfView:best]) { /* keep outer */ }
+                else if (isNearerFront(scroll, best, root)) best = scroll;
             }
         }
-        [queue addObjectsFromArray:view.subviews];
+        for (UIView *sub in view.subviews.reverseObjectEnumerator) [queue addObject:sub];
     }
     if (best) takePageScroll(best, @"searched");
     static NSUInteger logged;
     if (!sg_pageScroll.window && logged++ < 8) {
-        SGLog(@"tab bar: no page list found to minimize by (%lu tall enough of %lu scroll views, bar %@)",
-              (unsigned long)found, (unsigned long)seen, sg_inlineHost.hidden ? @"hidden" : @"shown");
+        SGLog(@"tab bar: no page list found to minimize by (%lu of %lu scroll views)",
+              (unsigned long)found, (unsigned long)seen);
     }
 }
 
@@ -1705,23 +1779,19 @@ static void searchPageScroll(void) {
 @implementation SGRScrollDrag
 + (void)dragged:(UIPanGestureRecognizer *)pan {
     UIScrollView *scroll = (UIScrollView *)pan.view;
+    if (![scroll isKindOfClass:UIScrollView.class]) return;
+    if (pan.state == UIGestureRecognizerStateBegan || pan.state == UIGestureRecognizerStateChanged) {
+        CGPoint velocity = [pan velocityInView:scroll];
+        CGPoint translation = [pan translationInView:scroll];
+        BOOL vertical = fabs(velocity.y) >= fabs(velocity.x) || fabs(translation.y) >= fabs(translation.x);
+        if (vertical && canDriveMinimize(scroll)) takePageScroll(scroll, @"dragged");
+    }
     if (pan.state == UIGestureRecognizerStateEnded && scroll == sg_pageScroll) {
         static NSUInteger logged;
         UIEdgeInsets inset = scroll.adjustedContentInset;
         if (logged++ < 40) SGLog(@"tab bar: drag ended on the followed list, offset %.0f, inset top %.0f bottom %.0f, content %.0f of %.0f, page names it %d",
                                  scroll.contentOffset.y, inset.top, inset.bottom, scroll.contentSize.height, scroll.bounds.size.height,
                                  [sg_inlineTabs.selectedViewController contentScrollViewForEdge:NSDirectionalRectEdgeBottom] == scroll);
-    }
-    if (pan.state == UIGestureRecognizerStateBegan && [scroll isKindOfClass:UIScrollView.class] && scroll != sg_pageScroll) {
-        if (isPageScroll(scroll)) {
-            CGPoint velocity = [pan velocityInView:scroll];
-            if (fabs(velocity.y) > fabs(velocity.x)) takePageScroll(scroll, @"dragged");
-        } else {
-            static NSUInteger ignored;
-            if (ignored++ < 8) SGLog(@"tab bar: drag on %@ %p not the page list (frame %@, followed %@)",
-                                     NSStringFromClass(scroll.class), scroll, NSStringFromCGRect(scroll.frame),
-                                     sg_pageScroll ? NSStringFromClass(sg_pageScroll.class) : @"none");
-        }
     }
     if (scroll == sg_pageScroll) {
         if (pan.state == UIGestureRecognizerStateBegan) sg_dragActive = YES;
@@ -1755,25 +1825,23 @@ static char kDragKey;
 - (void)setContentOffset:(CGPoint)offset {
     CGPoint old = self.contentOffset;
     %orig;
-    if (!sg_inlineTabs || fabs(offset.y - old.y) < 0.5 || self.bounds.size.height < 200) return;
+    if (!sg_inline || !sg_inlineTabs) return;
+    CGFloat dy = fabs(offset.y - old.y);
+    if (dy < 0.5) return;
     UIScrollView *scroll = (UIScrollView *)self;
-    if (!isPageScroll(scroll)) return;
-    if (sg_pageScroll != scroll) {
-        sg_pageScroll = scroll;
-        static NSUInteger logged;
-        if (logged++ < 8) SGLog(@"tab bar: offset follows %@ %p", NSStringFromClass(scroll.class), scroll);
-        nameScrollView();
-    }
+    // Any vertical movement on a list that can drive minimize — no height floor, no page allow list.
+    if (!canDriveMinimize(scroll)) return;
+    if (fabs(offset.x - old.x) > dy) return; // horizontal pan
+    takePageScroll(scroll, @"offset");
 }
 - (void)didMoveToWindow {
     %orig;
-    if (!self.window) return;
+    if (!self.window || !sg_inline) return;
     if (!objc_getAssociatedObject(self, &kDragKey)) {
         objc_setAssociatedObject(self, &kDragKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [self.panGestureRecognizer addTarget:SGRScrollDrag.class action:@selector(dragged:)];
     }
     considerScrollView(self);
-    // A page arriving in a transition may not have its size yet.
     __weak UIScrollView *weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
         UIScrollView *scroll = weakSelf;
@@ -1861,6 +1929,15 @@ static void itemDidLayOut(UIView *item) {
     %orig;
     UIView *bar = sg_stockBar;
     if (bar) syncBar(bar);
+    // Library root stays full-frame under a playlist / album; retarget minimize to the page in front.
+    if (sg_inline) {
+        sg_pageScroll = nil;
+        sg_forceScrollSearch = YES;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            searchPageScroll();
+            nameScrollView();
+        });
+    }
 }
 %end
 
@@ -1868,9 +1945,17 @@ static void itemDidLayOut(UIView *item) {
 %hook _TtC23NavigationUI_TabBarImpl19TabBarContainerImpl
 - (void)setSelectedViewController:(UIViewController *)controller {
     %orig;
+    if (sg_inline) {
+        sg_pageScroll = nil;
+        sg_forceScrollSearch = YES;
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
         UIView *bar = sg_stockBar;
         if (bar) syncBar(bar);
+        if (sg_inline) {
+            searchPageScroll();
+            nameScrollView();
+        }
     });
 }
 // The message bar coming or going changes the view's safe area before Spotify lays the bar out for it,
