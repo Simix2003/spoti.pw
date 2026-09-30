@@ -2,6 +2,7 @@
 #import "Settings/SGPageStyle.h"
 #import "About.h"
 #import "App/Onboarding/Onboarding.h"
+#import "Shared/JamProbe/JamProbe.h"
 
 // Makefile passes these. A build that doesn't still compiles, and the row says unknown.
 #ifndef SG_BUILD
@@ -68,6 +69,9 @@ UIViewController *SGAboutPage(void) {
         SGStatRow(@"Version", ^NSString *{ return @(SG_VERSION); }),
         SGStatRow(@"Build", ^NSString *{ return SGBuildLabel(); }),
         SGStatRow(@"Spotify", ^NSString *{ return spotify; }),
+    ])];
+    [sections addObject:SGSection(@"Debug", @[
+        withSymbol(SGPageRow(@"Jam probe", ^UIViewController *{ return SGJamProbePage(); }), @"ladybug"),
     ])];
     SGModRow *appIcon = SGAppIconRow();
     if (appIcon) [sections addObject:SGSection(nil, @[withSymbol(appIcon, @"app")])];
