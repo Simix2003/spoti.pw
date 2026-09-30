@@ -107,6 +107,9 @@ static void applyRow(UIView *cell) {
 - (UICollectionViewLayoutAttributes *)preferredLayoutAttributesFittingAttributes:(UICollectionViewLayoutAttributes *)attributes {
     UICollectionViewLayoutAttributes *result = %orig;
     if (!SGRFindByIdentifier((UIView *)self, SGRPlaylistCurationIdentifier, &kToolbarKey)) return result;
+    // Measured before layoutSubviews. A height of 0 never comes on screen, so this is the pass
+    // that sees the Mix pill when the playlist opens.
+    SGRPlaylistTakeCuration((UIView *)self);
     result.size = CGSizeMake(result.size.width, 0);
     ((UIView *)self).clipsToBounds = YES;
     static dispatch_once_t once;

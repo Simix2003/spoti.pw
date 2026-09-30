@@ -31,6 +31,11 @@ void SGRPlaylistTakeSort(UIView *page, UIView *button);
 // YES when this page's curation row has Spotify's Mix pill. That is the mixed playlist the Play
 // capsule draws a glow around; a playlist without the pill is not. NO until the row has been seen.
 BOOL SGRPlaylistIsMixed(UIView *page);
+// YES once the curation row has been found on this page, whether or not it has a Mix pill.
+BOOL SGRPlaylistCurationSeen(UIView *page);
+// Asks the header's Play capsule to read the mix pill again. The row is often measured after the
+// header's first pass, which left the glow off until a scroll laid the header out a second time.
+void SGRPlaylistRefreshPlayGlow(UIView *page);
 
 // The playlist page `view` is on, or nil: SPTFreeTierPlaylistEncoreHeaderViewController's own view, the one
 // the tree names PL.Header, for anything under the header, and FTPViewController's view for the list.
