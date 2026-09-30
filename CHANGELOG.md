@@ -47,6 +47,11 @@ Entries for the `beta-simix-overnight` fork. Release Please does not version the
 * **Changed:** On a redesigned playlist, Mix is the first row of the ⋯ sheet, above Sort. The row still fires Spotify's own `ListPlatform.ToolbarActions.MixButton` pill. Its title is the shortest string already on that pill (the word it draws), and a longer string Spotify already has on the pill is the line under it, so a status such as "Playlist mixata" is not the only label. A pill that reports itself selected draws the waveform in the accent with a check. The glyph is a waveform. No new wording is invented, and the pill row over the tracks stays closed up (`PlaylistRows.x`).
 * **Known limits:** Not compiled and not run on a phone or in `harness/playlist/` (that harness needs the iOS simulator). If the pill has only one string, the row has one line, that string. On and off are read from `selected` and `UIAccessibilityTraitSelected` only; a pill that shows its state some other way stays drawn as off. Someone else's playlist still has no Mix row, because Spotify draws no pill there.
 
+### Mixed playlist sort
+
+* **Not changed.** A mixed playlist is not reordered to Recently added by the mod. The redesigned ⋯ sheet already fires Spotify's own Sort control, and that sheet is the safe place to pick Recently added when Spotify offers it. No sort-sheet class or "Recently added" selector is proved in this checkout (`trees/` is absent, there is no binary), so nothing new was hooked. Finding: `docs/mixed-playlist-sort.md`.
+* **Known limits:** Mix stores transitions between adjacent tracks. Spotify's own reorder for that state is Smart Reorder (BPM and key, from Mix, then Edit), which is not Recently added and is not proved here either. Selecting Recently added by matching a translated label was not done.
+
 ## [0.22.0](https://github.com/skopevoj/spoti.pw/compare/v0.21.1...v0.22.0) (2026-09-23)
 
 
