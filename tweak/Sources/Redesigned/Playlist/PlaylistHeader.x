@@ -341,6 +341,7 @@ static void showPlaylist(SGRHeaderInfo *info, UIView *block, UIView *root, id mo
     // More, pinned over the page rather than left in the block, which is concealed and scrolls away; and
     // Spotify's own Sort, from the find-on-page toolbar this header conceals, for the ⋯ sheet to fire.
     UIView *page = SGRPlaylistPageOf(root);
+    [info setPlayShimmer:SGRPlaylistIsMixed(page)];
     SGRPinnedMore(page, &kPinnedMoreKey, SGRFindByIdentifier(block, @"Components.UI.ContextMenuButton*", &kMoreKey));
     SGRPlaylistTakeSort(page, SGRFindByIdentifier(root, @"Components.Header.UI.Toolbar.Button", &kSortKey));
     // The name and Play are what the header waits for; the row's other buttons fade in on their own when late.

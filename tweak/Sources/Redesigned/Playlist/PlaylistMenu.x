@@ -169,6 +169,19 @@ static void pillsIn(UIView *toolbar, UIView **sort, UIView **mix) {
     *mix = foundMix;
 }
 
+BOOL SGRPlaylistIsMixed(UIView *page) {
+    UIView *toolbar = page ? objc_getAssociatedObject(page, &kToolbarKey) : nil;
+    if (!toolbar) return NO;
+    UIView *sort = nil, *mix = nil;
+    pillsIn(toolbar, &sort, &mix);
+    static BOOL logged;
+    if (mix && !logged) {
+        logged = YES;
+        SGLog(@"redesign playlist: mixed, the play capsule can shimmer");
+    }
+    return mix != nil;
+}
+
 void SGRPlaylistTakeSort(UIView *page, UIView *button) {
     if (page && button && objc_getAssociatedObject(page, &kSortKey) != button) {
         objc_setAssociatedObject(page, &kSortKey, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);

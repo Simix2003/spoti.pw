@@ -50,6 +50,77 @@ static NSString *wordIn(UIView *button) {
     UIImageView *_glyph;
     UILabel *_title;
     __weak UIImageView *_watchedGlyph;
+    CAGradientLayer *_shine;
+    BOOL _mixShimmer;
+}
+
+- (void)setMixShimmer:(BOOL)on {
+    BOOL changed = _mixShimmer != on;
+    _mixShimmer = on;
+    if (changed && on) {
+        static BOOL logged;
+        if (!logged) {
+            logged = YES;
+            SGLog(@"redesign playlist: mix shimmer on the play capsule");
+        }
+    }
+    [self sgr_updateShimmer];
+}
+
+- (BOOL)mixShimmer {
+    return _mixShimmer;
+}
+
+// A bright band across the white capsule. A display link is not used: one capped at 60 Hz drags
+// the player's transitions, and this capsule is not on the player anyway.
+- (void)sgr_updateShimmer {
+    BOOL reduce = UIAccessibilityIsReduceMotionEnabled();
+    BOOL show = _mixShimmer && self.window && !reduce && !CGRectIsEmpty(self.bounds);
+    if (!show) {
+        [_shine removeAllAnimations];
+        [_shine removeFromSuperlayer];
+        _shine = nil;
+        if (!_mixShimmer) self.layer.masksToBounds = NO;
+        if (_mixShimmer && self.window && reduce) {
+            static BOOL logged;
+            if (!logged) {
+                logged = YES;
+                SGLog(@"redesign playlist: mix shimmer skipped, reduce motion");
+            }
+        }
+        return;
+    }
+    self.layer.masksToBounds = YES;
+    CGRect bounds = self.bounds;
+    CGFloat band = MAX(28, bounds.size.width * 0.42);
+    if (!_shine) {
+        _shine = [CAGradientLayer layer];
+        _shine.colors = @[
+            (id)[UIColor colorWithWhite:1 alpha:0].CGColor,
+            (id)[UIColor colorWithWhite:1 alpha:0.72].CGColor,
+            (id)[UIColor colorWithWhite:1 alpha:0].CGColor,
+        ];
+        _shine.locations = @[@0.2, @0.5, @0.8];
+        _shine.startPoint = CGPointMake(0, 0.35);
+        _shine.endPoint = CGPointMake(1, 0.65);
+        [self.layer insertSublayer:_shine atIndex:0];
+    }
+    _shine.bounds = CGRectMake(0, 0, band, bounds.size.height);
+    if (![_shine animationForKey:@"sweep"]) {
+        _shine.position = CGPointMake(-band, bounds.size.height / 2);
+        CABasicAnimation *sweep = [CABasicAnimation animationWithKeyPath:@"position.x"];
+        sweep.fromValue = @(-band);
+        sweep.toValue = @(bounds.size.width + band);
+        sweep.duration = 1.7;
+        sweep.repeatCount = HUGE_VALF;
+        sweep.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        [_shine addAnimation:sweep forKey:@"sweep"];
+    }
+}
+
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    [self sgr_updateShimmer];
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -98,6 +169,7 @@ static NSString *wordIn(UIView *button) {
     CGSize text = _title.bounds.size;
     _title.frame = CGRectMake(CGRectGetMaxX(_glyph.frame), round((bounds.size.height - text.height) / 2),
                               MAX(0, bounds.size.width - kCapsuleTrail - CGRectGetMaxX(_glyph.frame)), text.height);
+    if (_mixShimmer) [self sgr_updateShimmer];
 }
 
 - (void)feedFrom:(UIView *)source {
