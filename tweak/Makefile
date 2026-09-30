@@ -7,6 +7,15 @@ FINALPACKAGE := 1
 # loads, so it is set above the include.
 SG_VERSION := $(or $(shell cat ../version.txt 2>/dev/null),0.0.0)
 PACKAGE_VERSION := $(SG_VERSION)
+# Short commit and branch, stamped beside the version so a fork build is not identical to upstream
+# beta. version.txt stays Release Please's. Missing git, or a build without these -D flags, is "unknown".
+SG_BUILD := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+SG_BUILD_BRANCH := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
+ifeq ($(shell git rev-parse --is-inside-work-tree 2>/dev/null),true)
+ifneq ($(shell git diff --quiet HEAD 2>/dev/null; echo $$?),0)
+SG_BUILD := $(SG_BUILD)-dirty
+endif
+endif
 
 include $(THEOS)/makefiles/common.mk
 
@@ -15,7 +24,7 @@ TWEAK_NAME := spotifyglass
 # Every source under Sources/, so a new feature needs no Makefile edit. Shared/Flags/SGFlagList.m
 # is generated from the IPA by scripts/extract-flags.py.
 spotifyglass_FILES := $(shell find Sources -name '*.m' -o -name '*.x' -o -name '*.swift' | sort)
-spotifyglass_CFLAGS := -fobjc-arc -ISources -DSG_VERSION=\"$(SG_VERSION)\"
+spotifyglass_CFLAGS := -fobjc-arc -ISources -DSG_VERSION=\"$(SG_VERSION)\" -DSG_BUILD=\"$(or $(SG_BUILD),unknown)\" -DSG_BUILD_BRANCH=\"$(or $(SG_BUILD_BRANCH),unknown)\"
 spotifyglass_FRAMEWORKS := UIKit QuartzCore UniformTypeIdentifiers MediaPlayer CoreImage AudioToolbox AVFoundation CoreHaptics Accelerate Network Metal
 # Runtime swizzling instead of Substrate so the dylib has no extra dependency inside the IPA.
 spotifyglass_LOGOS_DEFAULT_GENERATOR := internal
