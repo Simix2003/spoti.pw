@@ -700,6 +700,7 @@ static void searchPageScroll(void);
 
 static void nameScrollView(void) {
     if (sg_holdScrollLink) return;
+    if (!sg_inline) return;
     SGRInlineTabs *tabs = sg_inlineTabs;
     UIViewController *page = tabs.selectedViewController;
     UIScrollView *scroll = sg_pageScroll;
@@ -711,7 +712,20 @@ static void nameScrollView(void) {
         static NSUInteger linked;
         if (linked++ < 12) SGLog(@"tab bar: list link %@ %@ %p", named == scroll ? @"set" : @"did not stick", NSStringFromClass(scroll.class), scroll);
     }
-    if (named == scroll) return;
+    // Name every loaded stand-in page so a later tab select still hands UIKit the same list.
+    for (UIViewController *vc in tabs.viewControllers) {
+        if (!vc || vc == page) continue;
+        if ([vc contentScrollViewForEdge:NSDirectionalRectEdgeBottom] != scroll)
+            [vc setContentScrollView:scroll forEdge:NSDirectionalRectEdgeAll];
+    }
+    if (named == scroll) {
+        static BOOL once;
+        if (!once) {
+            once = YES;
+            SGLog(@"tab bar: minimize follows %@ %p", NSStringFromClass(scroll.class), scroll);
+        }
+        return;
+    }
     // UIKit reads the scroll view when the page is selected, not when it is named. Flipping on every
     // layout pass, including under a finger, cancelled the drag and the capsule never followed it.
     if (sg_dragActive) {
@@ -748,7 +762,17 @@ static void nameScrollView(void) {
 }
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    nameScrollView();
+    if (sg_inline) {
+        searchPageScroll();
+        nameScrollView();
+    }
+}
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (sg_inline) {
+        searchPageScroll();
+        nameScrollView();
+    }
 }
 // UIKit minimizes from this. The stand-in page has no list of its own; Spotify's page list is named
 // here so Home and Library both hand UIKit the same bottom-edge scroll view.
@@ -1199,6 +1223,10 @@ static void sg_logLeadingTabs(SGRInlineTabs *tabs) {
 // The controller's bar stays the full screen wide. A narrower centered frame pulled the Search
 // circle off the trailing edge and centered the remaining tabs with it. Minimized, UIKit places
 // the leading tab and that circle itself, which also needs the full width.
+//
+// With a bottom accessory, UIKit stretches Fixed leading tabs across the gap to Search. itemWidth
+// + centered positioning keeps them content-sized — the same compact look as with no accessory —
+// without the platter-frame / title-shortening passes behind kNavbarCustomLayout.
 - (CGFloat)fittingItemWidth {
     if (@available(iOS 26.0, *)) {
         NSUInteger regular = 0;
@@ -1218,28 +1246,41 @@ static void sg_logLeadingTabs(SGRInlineTabs *tabs) {
     return 0;
 }
 
-- (void)viewDidLayoutSubviews {
+- (BOOL)shouldHugLeadingTabs {
+    if (!sg_inline) return NO;
+    if (@available(iOS 26.0, *)) return self.bottomAccessory != nil;
+    return NO;
+}
+
+- (void)applyHugLeadingTabs {
     UITabBar *bar = self.tabBar;
-    if (!kNavbarCustomLayout) {
-        [super viewDidLayoutSubviews];
+    if (self.minimized) {
+        if (bar.itemWidth != 0) bar.itemWidth = 0;
         return;
     }
+    CGFloat width = [self fittingItemWidth];
+    if (width > 1 && fabs(bar.itemWidth - width) > 0.5) {
+        bar.itemWidth = width;
+        static CGFloat logged;
+        if (fabs(logged - width) > 0.5) {
+            logged = width;
+            SGLog(@"tab bar: item width %.0f (hug accessory)", width);
+        }
+    }
+    if (bar.itemPositioning != UITabBarItemPositioningCentered)
+        bar.itemPositioning = UITabBarItemPositioningCentered;
+}
+
+- (void)viewDidLayoutSubviews {
+    UITabBar *bar = self.tabBar;
+    BOOL hug = [self shouldHugLeadingTabs];
+    if (hug || kNavbarCustomLayout) [self applyHugLeadingTabs];
+    else if (bar.itemWidth != 0) bar.itemWidth = 0;
+    [super viewDidLayoutSubviews];
+    if (sg_inline && !sg_pageScroll.window) searchPageScroll();
+    if (!kNavbarCustomLayout) return;
     // Width of one tab, not of the bar. fullWidth/count stretched two tabs across the gap Create
     // left. Zero let UIKit share that gap with the hidden tab and clip "La tua libreria" to "L".
-    if (!self.minimized) {
-        CGFloat width = [self fittingItemWidth];
-        if (width > 1 && fabs(bar.itemWidth - width) > 0.5) {
-            bar.itemWidth = width;
-            static CGFloat logged;
-            if (fabs(logged - width) > 0.5) {
-                logged = width;
-                SGLog(@"tab bar: item width %.0f", width);
-            }
-        }
-        if (bar.itemPositioning != UITabBarItemPositioningCentered)
-            bar.itemPositioning = UITabBarItemPositioningCentered;
-    }
-    [super viewDidLayoutSubviews];
     static BOOL fitting;
     if (fitting) return;
     NSUInteger count = self.sources.count;
@@ -1268,6 +1309,13 @@ static void sg_logLeadingTabs(SGRInlineTabs *tabs) {
 
 - (void)minimizedChanged {
     [self logAccessoryFrame:self.minimized ? @"trait inline" : @"trait expanded"];
+    if (self.minimized) {
+        static BOOL once;
+        if (!once) {
+            once = YES;
+            SGLog(@"tab bar: accessory minimized inline (UIKit OnScrollDown)");
+        }
+    }
     if (self.stockBar) syncBar(self.stockBar);
 }
 
@@ -1292,7 +1340,16 @@ static void sg_logLeadingTabs(SGRInlineTabs *tabs) {
         }
         BOOL track = SGURIString(state.track.URI).length > 0;
         UITabAccessory *want = track ? self.accessory : nil;
-        if (self.bottomAccessory != want) [self setBottomAccessory:want animated:self.viewIfLoaded.window != nil];
+        BOOL changed = self.bottomAccessory != want;
+        if (changed) [self setBottomAccessory:want animated:self.viewIfLoaded.window != nil];
+        // Keep OnScrollDown armed whenever the accessory is up; nothing else may leave it on Never.
+        if (want && self.tabBarMinimizeBehavior != UITabBarMinimizeBehaviorOnScrollDown)
+            self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
+        if (want && (changed || !sg_pageScroll.window)) {
+            searchPageScroll();
+            nameScrollView();
+            if (changed) SGLog(@"tab bar: accessory %@, behavior %ld", track ? @"on" : @"off", (long)self.tabBarMinimizeBehavior);
+        }
     }
 }
 
@@ -1574,12 +1631,16 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
 // the bar is up; later pages are taken as they come on screen, and whichever list a finger starts
 // dragging up or down is taken on the spot, in case the guess was another.
 static BOOL isPageScroll(UIScrollView *scroll) {
+    if (!sg_inline) return NO;
     SGRInlineHost *host = sg_inlineHost;
     UIView *container = host.superview;
-    if (!container || !scroll.window || scroll.hidden || scroll.pagingEnabled) return NO;
+    if (!container || !scroll.window || scroll.hidden || scroll.alpha < 0.01 || scroll.pagingEnabled) return NO;
     if (![scroll isDescendantOfView:container] || [scroll isDescendantOfView:host]) return NO;
-    // A playlist list under a tall header is still the page list when it covers about a third of the screen.
-    return scroll.bounds.size.height >= container.bounds.size.height * 0.35;
+    // A playlist list under a tall header is still the page list when it covers about a quarter of the screen.
+    if (scroll.bounds.size.height < container.bounds.size.height * 0.25) return NO;
+    // Prefer lists that can actually scroll; an empty shell of the right size is left for a later pass.
+    if (scroll.contentSize.height + 8 < scroll.bounds.size.height && scroll.contentOffset.y < 1) return NO;
+    return YES;
 }
 
 static void takePageScroll(UIScrollView *scroll, NSString *why) {
@@ -1594,19 +1655,23 @@ static void considerScrollView(UIScrollView *scroll) {
     if (!isPageScroll(scroll)) return;
     UIScrollView *current = sg_pageScroll;
     if (current == scroll) return;
+    // Prefer the nested list over a parent that also qualifies.
     if (current.window && [current isDescendantOfView:scroll]) return;
-    takePageScroll(scroll, @"came on screen");
+    takePageScroll(scroll, [scroll isDescendantOfView:current] ? @"inner list" : @"came on screen");
 }
 
 static void searchPageScroll(void) {
+    if (!sg_inline) return;
     UIView *container = sg_inlineHost.superview;
     if (!container) return;
-    // The bar lays out often; a page with no list is searched at most once a second.
+    // Keep hunting while unlinked; once linked, do not scan more than once a second.
     static CFTimeInterval last;
     CFTimeInterval now = CACurrentMediaTime();
-    if (now - last < 1) return;
+    CFTimeInterval gap = sg_pageScroll.window ? 1.0 : 0.25;
+    if (now - last < gap) return;
     last = now;
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:container];
+    UIScrollView *best = nil;
     NSUInteger found = 0, seen = 0;
     while (queue.count) {
         UIView *view = queue.firstObject;
@@ -1614,13 +1679,19 @@ static void searchPageScroll(void) {
         if (view == sg_inlineHost || view.hidden || view.alpha < 0.01) continue;
         if ([view isKindOfClass:UIScrollView.class]) {
             seen++;
-            if (isPageScroll((UIScrollView *)view)) {
+            UIScrollView *scroll = (UIScrollView *)view;
+            if (isPageScroll(scroll)) {
                 found++;
-                considerScrollView((UIScrollView *)view);
+                // Innermost wins: a nested list replaces its parent.
+                if (!best || [scroll isDescendantOfView:best]
+                    || (scroll.contentSize.height > best.contentSize.height && ![best isDescendantOfView:scroll])) {
+                    best = scroll;
+                }
             }
         }
         [queue addObjectsFromArray:view.subviews];
     }
+    if (best) takePageScroll(best, @"searched");
     static NSUInteger logged;
     if (!sg_pageScroll.window && logged++ < 8) {
         SGLog(@"tab bar: no page list found to minimize by (%lu tall enough of %lu scroll views, bar %@)",
