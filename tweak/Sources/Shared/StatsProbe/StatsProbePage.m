@@ -3,12 +3,12 @@
 #import "StatsProbe.h"
 
 UIViewController *SGStatsProbePage(void) {
-    SGModRow *pill = SGOptionRow(@"Show Probe pill", @"On Statistiche di ascolto and its sub-pages only", SGKeyStatsProbe);
+    SGModRow *pill = SGOptionRow(@"Show Probe pill", @"Lower-right on every screen until you turn it off", SGKeyStatsProbe);
     SGModRow *share = SGActionRow(@"Share last probe", @"The newest dump file in Documents", ^{ SGStatsProbeShareLast(); });
     return [[SGModPage alloc] initWithTitle:@"Stats probe" intro:SGRestartNote sections:@[
         SGNotedSection(@"Stats probe", @[
             SGWithSymbol(pill, @"chart.bar.xaxis"),
             SGWithSymbol(share, @"square.and.arrow.up"),
-        ], @"Read-only. Off by default: the pill used to hook every screen and crash Spotify. Turn it on only when you need a dump, restart, open Statistiche di ascolto, tap Probe, then turn it off again."),
+        ], @"Read-only. Off by default. Turn it on, restart, open Statistiche di ascolto, tap Probe, share the file, then turn it off and restart. The pill stays on every screen while the switch is on — Spotify hosts that page without a matching title."),
     ] footer:nil];
 }

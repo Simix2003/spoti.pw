@@ -2,9 +2,10 @@
 // asking it for more. No request is sent and no setter, reload, or cell-for-index is called.
 //
 // The pill is off until Mod → Debug → Stats probe turns SGKeyStatsProbe on and Spotify restarts.
-// While on, the pill is shown from the visible page's class and title (no view-tree walk on every
-// screen). The dump writes the file as it goes and only reads UIView / UIViewController properties
-// (text, frames, accessibility, image size). It does not walk arbitrary ivars.
+// While on, the pill stays on every screen: Statistiche di ascolto is hosted without a matching
+// class/title, so page detection alone never finds it. The dump writes the file as it goes and
+// only reads UIView / UIViewController properties (text, frames, accessibility, image size).
+// It does not walk arbitrary ivars.
 #import "StatsProbe.h"
 #import "Core/SGCore.h"
 #import "Settings/SGPageStyle.h"
@@ -29,12 +30,6 @@ static NSString *sg_loggedPage;
 static NSUInteger sg_toastGen;
 static __weak UILabel *sg_toast;
 static __weak UIButton *sg_probeButton;
-static __weak UIViewController *sg_cacheLeaf;
-static __weak UIViewController *sg_cacheContent;
-static NSString *sg_cacheTitle;
-static NSString *sg_cacheReason;
-static BOOL sg_cacheMatch;
-static BOOL sg_cacheValid;
 
 #pragma mark - detection
 
@@ -614,8 +609,13 @@ static void dumpNow(void) {
     probeStep(@"open");
     NSString *reason = nil;
     UIViewController *leaf = nil;
-    @try { leaf = statsPage(&reason, YES); }
-    @catch (NSException *ex) {
+    @try {
+        leaf = statsPage(&reason, YES);
+        if (!leaf) {
+            leaf = visibleLeaf();
+            reason = @"visible";
+        }
+    } @catch (NSException *ex) {
         sg_busy = NO;
         SGLog(@"stats probe: stopped (%@)", ex.name);
         toast(@"Stats probe stopped");
@@ -623,7 +623,7 @@ static void dumpNow(void) {
     }
     if (!leaf) {
         sg_busy = NO;
-        toast(@"Stats page is not on screen");
+        toast(@"No page is on screen");
         return;
     }
     probeStep(@"resolve");
@@ -631,7 +631,8 @@ static void dumpNow(void) {
     UIView *root = nil;
     @try { root = leaf.isViewLoaded ? leaf.view : nil; }
     @catch (NSException *ex) { root = nil; }
-    UIView *content = tightStatsView(root);
+    // Prefer a tight stats subview when phrases are on screen; otherwise dump the whole leaf.
+    UIView *content = tightStatsView(root) ?: root;
     UIViewController *owner = ownerOf(content) ?: contentVC;
     NSString *title = nil;
     @try { title = controllerTitle(owner) ?: controllerTitle(contentVC) ?: controllerTitle(leaf); }
@@ -756,48 +757,22 @@ static UIButton *makeProbe(void) {
 static void refreshProbe(void) {
     if (sg_busy) return;
     if (UIApplication.sharedApplication.applicationState == UIApplicationStateBackground) return;
-    NSString *reason = nil;
-    UIViewController *page = nil;
+    // The stats screen is a MusicAppPageHostingViewController whose title lives only in
+    // labels — class/title matching never sees it. While the Debug switch is on the pill
+    // stays visible on every screen; the dump reads whatever page is up.
+    UIWindow *window = keyWindow();
+    if (!window) return;
     UIViewController *leaf = nil;
     @try { leaf = visibleLeaf(); }
     @catch (NSException *ex) { leaf = nil; }
-    NSString *leafTitle = controllerTitle(leaf);
-    BOOL laidOut = leaf.isViewLoaded && leaf.view.bounds.size.height > 2;
-    BOOL sameLeaf = laidOut && sg_cacheValid && leaf == sg_cacheLeaf && (leafTitle == sg_cacheTitle || [leafTitle isEqualToString:sg_cacheTitle]);
-    if (sameLeaf) {
-        page = sg_cacheMatch ? leaf : nil;
-        reason = sg_cacheReason;
-    } else {
-        @try { page = statsPage(&reason, NO); }
-        @catch (NSException *ex) { page = nil; }
-        sg_cacheLeaf = leaf;
-        sg_cacheTitle = leafTitle;
-        sg_cacheReason = reason;
-        sg_cacheMatch = page != nil;
-        // A page with no height yet has not laid out its title, so the next pass looks again.
-        sg_cacheValid = laidOut;
-    }
-    if (!page) {
-        sg_loggedPage = nil;
-        sg_probeButton.hidden = YES;
-        return;
-    }
-    UIViewController *content = sg_cacheContent;
-    if (!sameLeaf) {
-        @try { content = page ? statsContentController(page) : nil; }
-        @catch (NSException *ex) { content = nil; }
-        sg_cacheContent = content;
-    }
-    UIViewController *shown = content ?: page;
-    NSString *title = controllerTitle(shown);
-    if (!title.length) title = controllerTitle(page);
-    NSString *key = [NSString stringWithFormat:@"%@|%@|%@", NSStringFromClass(object_getClass(shown)), title ?: @"", NSStringFromClass(object_getClass(page))];
+    NSString *title = controllerTitle(leaf);
+    NSString *key = [NSString stringWithFormat:@"%@|%@", leaf ? NSStringFromClass(object_getClass(leaf)) : @"none", title ?: @""];
     if (![sg_loggedPage isEqualToString:key]) {
         sg_loggedPage = key;
-        SGLog(@"stats probe: page %@ title %@ leaf %@", NSStringFromClass(object_getClass(shown)), title.length ? title : @"(none)", NSStringFromClass(object_getClass(page)));
+        SGLog(@"stats probe: pill on leaf %@ title %@",
+              leaf ? NSStringFromClass(object_getClass(leaf)) : @"none",
+              title.length ? title : @"(none)");
     }
-    UIWindow *window = keyWindow();
-    if (!window) return;
     UIButton *button = sg_probeButton;
     if (!button) {
         button = makeProbe();
@@ -831,6 +806,7 @@ static void sg_viewDidDisappear(id self, SEL _cmd, BOOL animated) {
 static void installProbe(void) {
     if (sg_installed) return;
     sg_installed = YES;
+    SGLog(@"stats probe: pill armed (Show Probe pill is on)");
     Method appear = class_getInstanceMethod(UIViewController.class, @selector(viewDidAppear:));
     Method disappear = class_getInstanceMethod(UIViewController.class, @selector(viewDidDisappear:));
     if (appear) {
@@ -843,9 +819,10 @@ static void installProbe(void) {
     }
     static dispatch_source_t timer;
     timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), (uint64_t)(1.2 * NSEC_PER_SEC), (uint64_t)(0.2 * NSEC_PER_SEC));
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), (uint64_t)(1.2 * NSEC_PER_SEC), (uint64_t)(0.2 * NSEC_PER_SEC));
     dispatch_source_set_event_handler(timer, ^{ refreshProbe(); });
     dispatch_resume(timer);
+    scheduleRefresh();
 }
 
 void SGStatsProbeShareLast(void) {
