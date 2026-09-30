@@ -24,6 +24,32 @@ static char kBarKey, kHostKey;
 static __weak UIView *sg_stockBar;
 static CGFloat sg_room, sg_glassHeight;   // see "room for the glass bar"
 static BOOL sg_inline;                     // see "the tab bar with the mini player"
+// Full bar width divided by the most tabs seen at that width. Later hides fit the glass bar to
+// slot * visible count; the sample is always the unfitted width, so fitting cannot shrink the slot.
+static NSUInteger sg_slotCount;
+static CGFloat sg_slotWidth;
+
+static void noteTabSlot(CGFloat fullWidth, NSUInteger count) {
+    if (count < 2 || fullWidth < 80 || count < sg_slotCount) return;
+    sg_slotCount = count;
+    sg_slotWidth = fullWidth / (CGFloat)count;
+}
+
+static CGFloat fittedTabWidth(NSUInteger count, CGFloat fullWidth) {
+    if (sg_slotWidth < 1 || !count) return fullWidth;
+    return MIN(fullWidth, sg_slotWidth * (CGFloat)count);
+}
+
+static void logTabFit(NSUInteger count, CGFloat fullWidth, CGFloat fitted, NSString *where) {
+    static NSUInteger loggedCount;
+    static CGFloat loggedFit;
+    static NSString *loggedWhere;
+    if (count == loggedCount && fabs(fitted - loggedFit) < 0.5 && [where isEqualToString:loggedWhere]) return;
+    loggedCount = count;
+    loggedFit = fitted;
+    loggedWhere = where;
+    SGLog(@"tab bar: %lu tabs, full %.0f fitted %.0f slot %.1f (%@)", (unsigned long)count, fullWidth, fitted, sg_slotWidth, where);
+}
 
 @interface SGRSystemTabBar : UITabBar <UITabBarDelegate, UIGestureRecognizerDelegate>
 @property (nonatomic, weak) UIView *stockBar;
@@ -40,7 +66,10 @@ static void syncBar(UIView *stockBar);
 static NSArray<UIView *> *tabItems(UIView *tabBar) {
     NSMutableArray<UIView *> *items = [NSMutableArray array];
     for (UIView *item in SGRowIn(tabBar).arrangedSubviews) {
-        if (!item.hidden && item.bounds.size.width >= 20) [items addObject:item];
+        // The navbar list's mark, not hidden alone: Spotify's layout pass turns hidden back off
+        // and the glass bar would keep the tab it was told to drop.
+        if (!SGRNavbarShowsItem(item) || item.hidden || item.bounds.size.width < 20) continue;
+        [items addObject:item];
     }
     return [items sortedArrayUsingComparator:^NSComparisonResult(UIView *a, UIView *b) {
         return [@(SGFrameIn(a, tabBar).origin.x) compare:@(SGFrameIn(b, tabBar).origin.x)];
@@ -526,7 +555,12 @@ static void syncBar(UIView *stockBar) {
     CGFloat height = MAX(bounds.size.height, glassHeight(bar, stockBar));
     CGRect frame = CGRectMake(0, CGRectGetMaxY(bounds) - height, width, height);
     if (!CGRectEqualToRect(host.frame, frame)) host.frame = frame;
-    if (!CGRectEqualToRect(bar.frame, host.bounds)) bar.frame = host.bounds;
+    noteTabSlot(width, sources.count);
+    CGFloat fit = fittedTabWidth(sources.count, width);
+    if (sg_slotWidth > 1 && fabs(bar.itemWidth - sg_slotWidth) > 0.5) bar.itemWidth = sg_slotWidth;
+    CGRect barFrame = CGRectMake(round((width - fit) / 2), 0, fit, host.bounds.size.height);
+    if (!CGRectEqualToRect(bar.frame, barFrame)) bar.frame = barFrame;
+    logTabFit(sources.count, width, fit, @"bar");
     if (host.superview != stockBar) [stockBar addSubview:host];
     else if (stockBar.subviews.lastObject != host) [stockBar bringSubviewToFront:host];
     logBarOnce(bar);
@@ -851,6 +885,35 @@ static const CGFloat kExpandVelocity = 350;
     tap.cancelsTouchesInView = NO;
     [self.tabBar addGestureRecognizer:tap];
     [self playerStateDidChange:SGPlayerState()];
+}
+
+// The controller's bar is the full screen wide. Fewer tabs keep the slot measured when more of them
+// were showing, and the glass bar's frame shrinks to that, centered. Minimized, the frame stays
+// UIKit's: the inline capsule needs the leading tab and the trailing circle at the screen edges.
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    static BOOL fitting;
+    if (fitting) return;
+    NSUInteger count = self.sources.count;
+    CGFloat full = self.view.bounds.size.width;
+    if (count < 2 || full < 80) return;
+    noteTabSlot(full, count);
+    UITabBar *bar = self.tabBar;
+    if (self.minimized) {
+        if (bar.itemWidth != 0) bar.itemWidth = 0;
+        return;
+    }
+    CGFloat fit = fittedTabWidth(count, full);
+    if (sg_slotWidth > 1 && fabs(bar.itemWidth - sg_slotWidth) > 0.5) bar.itemWidth = sg_slotWidth;
+    CGFloat x = round((full - fit) / 2);
+    if (fabs(bar.frame.size.width - fit) < 0.5 && fabs(bar.frame.origin.x - x) < 0.5) return;
+    fitting = YES;
+    CGRect frame = bar.frame;
+    frame.origin.x = x;
+    frame.size.width = fit;
+    bar.frame = frame;
+    fitting = NO;
+    logTabFit(count, full, fit, @"inline");
 }
 
 // The accessory is inline beside the minimized bar; with no track there is no accessory and no telling.

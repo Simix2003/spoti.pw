@@ -25,6 +25,9 @@ NSURL *SGRNavbarTabURL(NSString *uri);
 
 // Navbar.x, called from the tab bar's layout passes in TabBar.x.
 void SGRComposeTabBar(UIView *tabBar);
+// NO once the navbar list has hidden this item. Spotify laying the view out again does not put it
+// back on the glass bar; an item the list has not marked stays shown.
+BOOL SGRNavbarShowsItem(UIView *item);
 void SGRLogTabBarRow(UIView *tabBar);
 // Lays the bar out again after the Navbar page changes something, so it does not wait for a touch.
 void SGRRefreshTabBar(void);
