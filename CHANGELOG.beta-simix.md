@@ -43,7 +43,7 @@ Release Please still owns `CHANGELOG.beta.md`.
 * the redesign is documented as having no per-song downloaded badge; playlist and album rows are Spotify's cells restyled without a download glyph, and only the entity-level download button is restyled (`SGRDownload.m`) ([370a3bc](https://github.com/Simix2003/spoti.pw/commit/370a3bc271ddfbeb74a8a94ced581667c8970814))
 * each beta-simix task is given one shape in this changelog, with user-facing text, a technical note, and a linked commit ([69b8a5d](https://github.com/Simix2003/spoti.pw/commit/69b8a5d9cef86ac60ca401967fddc7dffa5b4cc5))
 * round 2 is planned from the device notes on `9b7d975` before the code changes: navbar width, Now Playing dismiss, mix shimmer, scrubber thumb, and mini player placement (`docs/round2-plan.md`) ([1bd21d4](https://github.com/Simix2003/spoti.pw/commit/1bd21d4bf1707e27b3927b48460a7a873c87ad73))
-* round 3 is noted from the device log on `94956f9`: why the mini player stayed inline, why the Search circle was centered, and what changed for the shimmer, the time bar, and the download button (`docs/round3-notes.md`)
+* round 3 is noted from the device log on `94956f9`: why the mini player stayed inline, why the Search circle was centered, and what changed for the shimmer, the time bar, and the download button (`docs/round3-notes.md`) ([169d0ad](https://github.com/Simix2003/spoti.pw/commit/169d0ad26c4777f4697cc18707a3f3230d06b8ec))
 
 ### Known limitations / not changed
 
