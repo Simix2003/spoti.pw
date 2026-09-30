@@ -1398,19 +1398,22 @@ static void logPlatterButtons(UIView *platter) {
 // circle off the trailing edge and centered the remaining tabs with it. Minimized, UIKit places
 // the leading tab and that circle itself, which also needs the full width.
 - (CGFloat)fittingItemWidth {
-    NSUInteger regular = 0;
-    CGFloat need = 88;
-    for (NSUInteger i = 0; i < self.sources.count && i < self.tabs.count; i++) {
-        if (isSearchItem(self.sources[i])) continue;
-        regular++;
-        NSString *title = self.tabs[i].title.length ? self.tabs[i].title : labelIn(self.sources[i]).text;
-        CGFloat width = sg_titlePixels(title) + 18;
-        if (width > need) need = width;
+    if (@available(iOS 26.0, *)) {
+        NSUInteger regular = 0;
+        CGFloat need = 88;
+        for (NSUInteger i = 0; i < self.sources.count && i < self.tabs.count; i++) {
+            if (isSearchItem(self.sources[i])) continue;
+            regular++;
+            NSString *title = self.tabs[i].title.length ? self.tabs[i].title : labelIn(self.sources[i]).text;
+            CGFloat width = sg_titlePixels(title) + 18;
+            if (width > need) need = width;
+        }
+        if (!regular) return 0;
+        CGFloat room = sg_tabRoom(self.view.bounds.size.width, regular);
+        if (need > room) need = room;
+        return need;
     }
-    if (!regular) return 0;
-    CGFloat room = sg_tabRoom(self.view.bounds.size.width, regular);
-    if (need > room) need = room;
-    return need;
+    return 0;
 }
 
 - (void)viewDidLayoutSubviews {
