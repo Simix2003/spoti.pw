@@ -632,7 +632,8 @@ static void claimDrawer(UIViewController *list) {
         UIViewController *presented = weak;
         if (!presented) return;
         __block UIViewController *list = nil;
-        void (^walk)(UIViewController *) = ^(UIViewController *vc) {
+        __block void (^walk)(UIViewController *);
+        walk = ^(UIViewController *vc) {
             if (list) return;
             if ([NSStringFromClass(vc.class) containsString:@"SideDrawer_ListPageImpl"]) list = vc;
             for (UIViewController *child in vc.childViewControllers) walk(child);
