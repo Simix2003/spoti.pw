@@ -36,7 +36,9 @@ BOOL SGROpenPlayerFromBar(void);
 // (CGRectNull while it is not in a window).
 UIView *SGRMakeMiniPlayer(void);
 // Navbar/TabBar.x. An upward drag settles the minimized bar above the tabs without waiting for
-// the page to be scrolled to the top. No-op when the mini player is off or the bar is already there.
+// the page to be scrolled to the top. A downward drag hands it back to UIKit so the capsule
+// minimizes with the list. No-op when the mini player is off or the bar is already there.
 void SGRExpandInlineBar(void);
+void SGRMinimizeInlineBar(void);
 CGRect SGRMiniPlayerFrameIn(UIView *host, CGFloat *radius);
 CGRect SGRMiniPlayerArtworkFrameIn(UIView *host);
