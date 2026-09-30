@@ -52,6 +52,12 @@ Entries for the `beta-simix-overnight` fork. Release Please does not version the
 * **Not changed.** A mixed playlist is not reordered to Recently added by the mod. The redesigned ⋯ sheet already fires Spotify's own Sort control, and that sheet is the safe place to pick Recently added when Spotify offers it. No sort-sheet class or "Recently added" selector is proved in this checkout (`trees/` is absent, there is no binary), so nothing new was hooked. Finding: `docs/mixed-playlist-sort.md`.
 * **Known limits:** Mix stores transitions between adjacent tracks. Spotify's own reorder for that state is Smart Reorder (BPM and key, from Mix, then Edit), which is not Recently added and is not proved here either. Selecting Recently added by matching a translated label was not done.
 
+### CarPlay
+
+* **Not changed.** No CarPlay code. A sideloaded tweak cannot grow a CarPlay app: `com.apple.developer.carplay-audio` is restricted, `scripts/install.sh` re-signs with the user's profile, and the tweak cannot add the entitlement or a CarPlay scene. Findings: `docs/carplay-notes.md`.
+* **What already reaches the car, when Spotify's own CarPlay session is up.** `LockScreenLyrics.x` puts the current line in `MPMediaItemPropertyArtist` on `MPNowPlayingInfoCenter`, which is the dictionary `CPNowPlayingTemplate` shows. It does not set `MPMediaItemPropertyLyrics`, and that key is not a lyrics view. CarPlay's audio rules say not to show lyrics on the car screen. Nothing was added to push lines there. Animated artwork stays on the lock screen's iOS 26 keys.
+* **Known limits:** Not run on a car or a phone. No CarPlay class is proved in this checkout, so none was hooked. A head unit may keep the artist from the track change and ignore later line updates.
+
 ## [0.22.0](https://github.com/skopevoj/spoti.pw/compare/v0.21.1...v0.22.0) (2026-09-23)
 
 
