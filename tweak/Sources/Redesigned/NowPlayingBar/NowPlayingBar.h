@@ -28,7 +28,8 @@ CGRect SGRNowPlayingArtworkFrameIn(UIView *host);
 // the picture Spotify's bar shows now, nil before it has one, and the view that shows it;
 UIImage *SGRNowPlayingArtworkImage(void);
 UIImageView *SGRNowPlayingArtworkView(void);
-// a tap on Spotify's bar, which opens the player; NO when nothing on the bar took it.
+// Asks Spotify's bar to open the player, and keeps asking until the player is on screen.
+// YES once the request is taken (including when the player is already up).
 BOOL SGROpenPlayerFromBar(void);
 
 // MiniPlayer.m: the accessory's content view, and its card and artwork in `host`'s coordinates

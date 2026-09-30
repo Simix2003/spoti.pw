@@ -603,14 +603,36 @@ static void nameScrollView(void) {
 
 @implementation SGRInlineHost
 // The bar's own view, anything in it and the accessory take a touch; the rest is Spotify's.
+// The glass UIKit draws around the accessory can be a sibling of the content view, and a platter
+// there used to take the tap. A point on the capsule, or on the snug glass around it, goes to the
+// mini player.
+- (UIView *)miniPlayerHit:(CGPoint)point event:(UIEvent *)event {
+    if (@available(iOS 26.0, *)) {
+        UIView *mini = self.tabs.bottomAccessory.contentView;
+        if (!mini || mini.hidden || mini.alpha < 0.01 || !mini.userInteractionEnabled) return nil;
+        UIView *capsule = mini;
+        for (UIView *v = mini.superview; v && v != self; v = v.superview) {
+            // The glass rim around the capsule, not the row it sits in: a full-width ancestor would
+            // take the tabs beside the minimized capsule.
+            CGFloat dw = v.bounds.size.width - mini.bounds.size.width;
+            CGFloat dh = fabs(v.bounds.size.height - mini.bounds.size.height);
+            if (dh >= 28 || dw < -12 || dw > 40) break;
+            capsule = v;
+        }
+        CGPoint inCapsule = [capsule convertPoint:point fromView:self];
+        if (![capsule pointInside:inCapsule withEvent:event]) return nil;
+        CGPoint inMini = [mini convertPoint:point fromView:self];
+        return [mini hitTest:inMini withEvent:event] ?: mini;
+    }
+    return nil;
+}
+
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *miniHit = [self miniPlayerHit:point event:event];
+    if (miniHit) return miniHit;
     UIView *hit = [super hitTest:point withEvent:event];
     UITabBar *bar = self.tabs.tabBar;
     // Expanded, the accessory is not inside the bar and UIKit's views around it are not named for it.
-    if (@available(iOS 26.0, *)) {
-        UIView *mini = self.tabs.bottomAccessory.contentView;
-        if (mini && [hit isDescendantOfView:mini]) return hit;
-    }
     for (UIView *v = hit; v && v != self; v = v.superview) {
         if (v == bar) return hit == bar ? nil : hit;
         if ([NSStringFromClass(v.class) containsString:@"Accessory"]) return hit;
