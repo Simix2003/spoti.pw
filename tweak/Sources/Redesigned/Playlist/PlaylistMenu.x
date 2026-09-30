@@ -170,14 +170,29 @@ static void pillsIn(UIView *toolbar, UIView **sort, UIView **mix) {
 }
 
 BOOL SGRPlaylistIsMixed(UIView *page) {
-    UIView *toolbar = page ? objc_getAssociatedObject(page, &kToolbarKey) : nil;
-    if (!toolbar) return NO;
+    static NSString *last;
+    if (!page) {
+        if (![last isEqualToString:@"no-page"]) {
+            last = @"no-page";
+            SGLog(@"redesign playlist: mixed no, the page is missing, shimmer off");
+        }
+        return NO;
+    }
+    UIView *toolbar = objc_getAssociatedObject(page, &kToolbarKey);
+    if (!toolbar) {
+        if (![last isEqualToString:@"no-toolbar"]) {
+            last = @"no-toolbar";
+            SGLog(@"redesign playlist: mixed no, the curation row has not been seen, shimmer off");
+        }
+        return NO;
+    }
     UIView *sort = nil, *mix = nil;
     pillsIn(toolbar, &sort, &mix);
-    static BOOL logged;
-    if (mix && !logged) {
-        logged = YES;
-        SGLog(@"redesign playlist: mixed, the play capsule can shimmer");
+    NSString *mark = mix ? @"mixed" : @"no-pill";
+    if (![last isEqualToString:mark]) {
+        last = mark;
+        if (mix) SGLog(@"redesign playlist: mixed, the play capsule can shimmer (pill \"%@\")", pillWord(mix) ?: mix.accessibilityIdentifier);
+        else SGLog(@"redesign playlist: mixed no, the curation row has no Mix pill, shimmer off");
     }
     return mix != nil;
 }
