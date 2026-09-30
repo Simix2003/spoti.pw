@@ -173,6 +173,11 @@ static void pursueOpen(NSUInteger token, NSUInteger fires) {
     });
 }
 
+BOOL SGRStockNowPlayingHidden(void) {
+    UIView *view = sg_barContainer;
+    return !view || view.hidden || view.alpha < 0.01 || !view.window;
+}
+
 BOOL SGROpenPlayerFromBar(void) {
     if (SGPlayerIsOnScreen()) return YES;
     // A second tap while the present from this one is in flight would toggle the player shut.

@@ -17,6 +17,7 @@ Changes on top of `beta` (0.23.0-beta). One commit. The Jam probe, the stats pro
 
 ## Fixes
 
+- With the Apple Music style player on, the leading tabs keep their own width and the mini player attaches once the bar is on screen.
 - Search is recognised by Spotify's `spotify:find` URI (the Italian title "Ricerca" does not contain "search"), so it stays the trailing circle after Reset nav bar too.
 - Search is the tab bar's prominent tab, so UIKit draws it as the trailing circle and Home and Library stay in the leading platter. The mini player can sit between them. Search does not open UIKit's own field on the empty stand-in page.
 - Hidden navbar tabs stay off the glass bar when Spotify lays the row out again.

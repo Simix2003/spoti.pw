@@ -686,6 +686,8 @@ static void syncBar(UIView *stockBar) {
 // The last touch on the bar went down on the minimized leading tab, and its tap went to the first tab
 // while UIKit selects the one under it.
 @property (nonatomic) BOOL touchedLead, leadRedirected;
+- (void)attachMiniPlayer;
+- (void)logChrome;
 @end
 
 static __weak SGRInlineTabs *sg_inlineTabs;
@@ -892,12 +894,13 @@ static void nameScrollView(void) {
     self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     if (@available(iOS 26.0, *)) {
         // Split Search is always on; the accessory and OnScrollDown are the Apple Music style player.
+        // OnScrollDown waits until the accessory's content view is in a window. Setting it here, before
+        // that view has a superview, leaves the environment unspecified and the leading tabs fill the row
+        // the accessory and the Search circle should share.
+        self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorNever;
         if (sg_inline) {
-            self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
             self.accessory = [[UITabAccessory alloc] initWithContentView:SGRMakeMiniPlayer()];
             [self.accessory.contentView registerForTraitChanges:@[UITraitTabAccessoryEnvironment.class] withTarget:self action:@selector(minimizedChanged)];
-        } else {
-            self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorNever;
         }
     }
     SGAddPlayerStateObserver(self);
@@ -927,7 +930,111 @@ static void nameScrollView(void) {
 }
 
 - (void)minimizedChanged {
+    [self logChrome];
     if (self.stockBar) syncBar(self.stockBar);
+}
+
+// With a bottom accessory and OnScrollDown, Automatic placement fills the leading group out to the
+// trailing edge, which is the gap the inline player and the Search circle occupy. Fixed keeps each
+// regular tab in that group; Centered keeps the group's own width, so the circle stays put and the
+// accessory has a row to sit in. Neither is set while the accessory is off: that bar already lays out.
+- (void)placeLeadingTabs:(BOOL)hug {
+    if (@available(iOS 26.0, *)) {
+        UITabBarItemPositioning positioning = hug ? UITabBarItemPositioningCentered : UITabBarItemPositioningAutomatic;
+        if (self.tabBar.itemPositioning != positioning) self.tabBar.itemPositioning = positioning;
+        UITabPlacement placement = hug ? UITabPlacementFixed : UITabPlacementAutomatic;
+        for (UITab *tab in self.tabs) {
+            if ([tab isKindOfClass:UISearchTab.class]) continue;
+            if (tab.preferredPlacement != placement) tab.preferredPlacement = placement;
+        }
+    }
+}
+
+- (NSString *)accessoryEnvironment {
+    if (@available(iOS 26.0, *)) {
+        UIView *content = self.bottomAccessory.contentView;
+        if (!self.bottomAccessory || !content) return @"none";
+        if (!content.superview) return @"unspecified";
+        switch (content.traitCollection.tabAccessoryEnvironment) {
+            case UITabAccessoryEnvironmentInline: return @"inline";
+            case UITabAccessoryEnvironmentRegular: return @"regular";
+            case UITabAccessoryEnvironmentNone: return @"none";
+            default: return @"unspecified";
+        }
+    }
+    return @"none";
+}
+
+- (void)logChrome {
+    if (@available(iOS 26.0, *)) {
+        BOOL track = SGURIString(SGPlayerState().track.URI).length > 0;
+        UIView *content = self.bottomAccessory.contentView;
+        NSString *selected = self.selectedTab.title.length ? self.selectedTab.title : @"none";
+        NSString *line = [NSString stringWithFormat:@"tab bar: accessory %@ content %@ bar %@ env %@ selected %@ minimized %d tabs %lu track %@ stockbar %@",
+                          self.bottomAccessory ? @"yes" : @"no",
+                          content ? NSStringFromCGRect(content.frame) : @"none",
+                          NSStringFromCGRect(self.tabBar.frame),
+                          [self accessoryEnvironment],
+                          selected,
+                          self.minimized,
+                          (unsigned long)self.tabs.count,
+                          track ? @"yes" : @"no",
+                          SGRStockNowPlayingHidden() ? @"hidden" : @"visible"];
+        static NSString *last;
+        if ([line isEqualToString:last]) return;
+        last = [line copy];
+        SGLog(@"%@", line);
+    }
+}
+
+// The accessory is applied once this view is in a window, then again if its content view was never
+// moved into a superview (the environment stays unspecified until then). OnScrollDown follows that,
+// so the bar does not minimize into a row that has no player and no Search circle.
+- (void)attachMiniPlayer {
+    if (!sg_inline || !self.viewIfLoaded.window) return;
+    if (@available(iOS 26.0, *)) {
+        BOOL track = SGURIString(SGPlayerState().track.URI).length > 0;
+        UITabAccessory *want = track ? self.accessory : nil;
+        [self placeLeadingTabs:want != nil];
+        BOOL changed = self.bottomAccessory != want;
+        if (changed) [self setBottomAccessory:want animated:NO];
+        UIView *content = self.bottomAccessory.contentView;
+        // Just assigned: UIKit parents the content view on the layout that follows, not in this call.
+        if (want && content && !content.superview && !changed) {
+            static NSUInteger retries;
+            static BOOL pending;
+            if (!pending && retries < 4) {
+                pending = YES;
+                retries++;
+                __weak typeof(self) weakSelf = self;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    pending = NO;
+                    if (@available(iOS 26.0, *)) {
+                        SGRInlineTabs *tabs = weakSelf;
+                        if (!tabs) return;
+                        [tabs setBottomAccessory:nil animated:NO];
+                        [tabs attachMiniPlayer];
+                    }
+                });
+            }
+        }
+        UITabBarMinimizeBehavior behavior = (want && self.bottomAccessory.contentView.superview)
+            ? UITabBarMinimizeBehaviorOnScrollDown : UITabBarMinimizeBehaviorNever;
+        if (self.tabBarMinimizeBehavior != behavior) {
+            self.tabBarMinimizeBehavior = behavior;
+            changed = YES;
+        }
+        if (changed) [self logChrome];
+    }
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [self attachMiniPlayer];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf logChrome];
+    });
 }
 
 // Between the first tab and the trailing circle.
@@ -948,9 +1055,8 @@ static void nameScrollView(void) {
             if (self.bottomAccessory) [self setBottomAccessory:nil animated:NO];
             return;
         }
-        BOOL track = SGURIString(state.track.URI).length > 0;
-        UITabAccessory *want = track ? self.accessory : nil;
-        if (self.bottomAccessory != want) [self setBottomAccessory:want animated:self.viewIfLoaded.window != nil];
+        (void)state;
+        [self attachMiniPlayer];
     }
 }
 
@@ -1172,6 +1278,7 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
         }
     }
     if (!sg_pageScroll.window) searchPageScroll();
+    [tabs attachMiniPlayer];
     static NSUInteger retries;
     if (missing && retries++ < 40) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
