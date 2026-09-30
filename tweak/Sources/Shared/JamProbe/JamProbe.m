@@ -514,7 +514,7 @@ static void appendClass(Class cls, NSMutableString *out) {
 }
 
 static void appendClassCensus(NSMutableString *out, NSUInteger *dumped, NSUInteger *jamLoaded) {
-    int total = 0;
+    unsigned int total = 0;
     Class *classes = objc_copyClassList(&total);
     NSMutableArray<NSMutableArray *> *buckets = [NSMutableArray array];
     NSMutableArray<NSNumber *> *counts = [NSMutableArray array];
@@ -522,7 +522,7 @@ static void appendClassCensus(NSMutableString *out, NSUInteger *dumped, NSUInteg
         [buckets addObject:[NSMutableArray array]];
         [counts addObject:@0];
     }
-    for (int i = 0; classes && i < total && !budgetHit(); i++) {
+    for (unsigned int i = 0; classes && i < total && !budgetHit(); i++) {
         NSString *name = NSStringFromClass(classes[i]);
         int index = patternIndex(name);
         if (index < 0) continue;
