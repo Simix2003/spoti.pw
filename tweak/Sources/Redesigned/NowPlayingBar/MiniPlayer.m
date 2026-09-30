@@ -258,9 +258,15 @@ static __weak SGRMiniPlayer *sg_miniPlayer;
 }
 
 // A pan anywhere on the capsule, including one UIKit added for the bar, waits until this tap fails.
+// The tap does not wait for the pan: that dependency is what used to swallow the open, and the
+// reverse would hold the tap until the pan gave up.
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)other {
     if (recognizer != _openTap) return NO;
     return [other isKindOfClass:UIPanGestureRecognizer.class];
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldRequireFailureOfGestureRecognizer:(UIGestureRecognizer *)other {
+    return NO;
 }
 
 // A sideways drag skips. An upward drag on the minimized capsule expands the bar. Anything else is

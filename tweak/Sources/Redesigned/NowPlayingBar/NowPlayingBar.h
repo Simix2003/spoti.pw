@@ -35,8 +35,8 @@ BOOL SGROpenPlayerFromBar(void);
 // MiniPlayer.m: the accessory's content view, and its card and artwork in `host`'s coordinates
 // (CGRectNull while it is not in a window).
 UIView *SGRMakeMiniPlayer(void);
-// Navbar/TabBar.x. The minimized bar otherwise stays down until the page is scrolled to the top.
-// No-op when the mini player is off or the bar is already expanded.
+// Navbar/TabBar.x. An upward drag settles the minimized bar above the tabs without waiting for
+// the page to be scrolled to the top. No-op when the mini player is off or the bar is already there.
 void SGRExpandInlineBar(void);
 CGRect SGRMiniPlayerFrameIn(UIView *host, CGFloat *radius);
 CGRect SGRMiniPlayerArtworkFrameIn(UIView *host);

@@ -3,6 +3,28 @@
 #import "About.h"
 #import "App/Onboarding/Onboarding.h"
 
+// Makefile passes these. A build that doesn't still compiles, and the row says unknown.
+#ifndef SG_BUILD
+#define SG_BUILD "unknown"
+#endif
+#ifndef SG_BUILD_BRANCH
+#define SG_BUILD_BRANCH "unknown"
+#endif
+
+// Branch and short commit, separate from SG_VERSION so a fork build is not identical to upstream beta.
+static NSString *SGBuildLabel(void) {
+    NSString *branch = @SG_BUILD_BRANCH;
+    NSString *build = @SG_BUILD;
+    if (!branch.length) branch = @"unknown";
+    if (!build.length) build = @"unknown";
+    if ([branch isEqualToString:@"unknown"] && [build isEqualToString:@"unknown"]) return @"unknown";
+    return [NSString stringWithFormat:@"%@ %@", branch, build];
+}
+
+__attribute__((constructor)) static void SGLogBuildIdentity(void) {
+    SGLog(@"build: %@", SGBuildLabel());
+}
+
 // Every key of the mod's is under one prefix, so a reset is a sweep of the defaults with the stock
 // marker of SGPrefs.h left behind; the hooks read them at launch, so it ends in a restart.
 static void resetAll(void) {
@@ -44,6 +66,7 @@ UIViewController *SGAboutPage(void) {
     NSMutableArray<SGModSection *> *sections = [NSMutableArray arrayWithObject:SGSection(nil, @[
         updates,
         SGStatRow(@"Version", ^NSString *{ return @(SG_VERSION); }),
+        SGStatRow(@"Build", ^NSString *{ return SGBuildLabel(); }),
         SGStatRow(@"Spotify", ^NSString *{ return spotify; }),
     ])];
     SGModRow *appIcon = SGAppIconRow();

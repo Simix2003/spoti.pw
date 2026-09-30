@@ -507,8 +507,16 @@ static void showSystemDimming(UIView *container) {
 }
 
 static void hidePresentation(UIView *sheet, UIView *container) {
+    if (!sheet) {
+        if (container) {
+            UIView *dimming = dimmingIn(container);
+            if (dimming && !dimming.hidden) dimming.hidden = YES;
+            hideSystemDimming(container);
+        }
+        return;
+    }
     CALayer *mask = objc_getAssociatedObject(sheet, &kMaskKey);
-    if (sheet && !mask) {
+    if (!mask) {
         mask = [CALayer layer];
         mask.frame = CGRectMake(0, 0, 1, 1);
         mask.backgroundColor = UIColor.clearColor.CGColor;
@@ -1020,6 +1028,29 @@ static void logDarkness(UIView *anyView) {
 }
 %end
 
+// The glass menu is already up when Spotify's sheet starts presenting, and the sheet's context menu
+// is often not in the hierarchy yet. Waiting for that menu before hiding let the sheet animate in
+// on top of the glass menu. Any sheet in the ⋯'s window is claimed and hidden immediately; the menu
+// is adopted once it appears. A sheet that never becomes the player's menu is shown again, unless
+// the glass menu is still up, in which case it stays hidden so the two are not on screen together.
+static void adoptClaimedMenu(UIViewController *sheet) {
+    if (!sheet || objc_getAssociatedObject(sheet, &kTakenKey)) return;
+    UIViewController *menu = contextMenuIn(sheet, 0);
+    if (!menu) return;
+    SGRPlayerMenuTakeover *t = takeoverFor(menu);
+    if (!t) return;
+    if (!t.sheet) t.sheet = sheet;
+    if (t.shown && !t.closed) t.sheetStoleMenu = NO;
+    t.waitingForSheet = NO;
+    pass(t);
+    openMenu(t);
+}
+
+static BOOL glassMenuIsUp(void) {
+    SGRPlayerMenuTakeover *early = sgr_early;
+    return early && !early.finished && !early.revealed && !early.closed && (early.shown || early.opened);
+}
+
 // The sheet and its dimming go out of sight as the presentation begins, before its first frame: the menu's
 // own appearance comes later than that, and hiding them only from there let the dimming's black and the sheet
 // show for a frame or two as the ⋯ was tapped (device, 2026-09-24). A presentation taken this way is claimed,
@@ -1027,36 +1058,57 @@ static void logDarkness(UIView *anyView) {
 %hook _TtC22NavigationUI_SheetImpl27SheetPresentationController
 
 - (void)presentationTransitionWillBegin {
-    %orig;
     UIPresentationController *presentation = (UIPresentationController *)self;
     UIViewController *sheet = presentation.presentedViewController;
-    UIViewController *menu = contextMenuIn(sheet, 0);
-    if (!moreTappedRecently() || !menu) return;
-    objc_setAssociatedObject(sheet, &kClaimKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    BOOL claim = moreTappedRecently();
+    if (claim) {
+        objc_setAssociatedObject(sheet, &kClaimKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        SGRPlayerMenuTakeover *early = sgr_early;
+        if (early && !early.finished && !early.revealed && !early.sheet) early.sheet = sheet;
+        hidePresentation(presentation.presentedView, presentation.containerView);
+    }
+    %orig;
+    if (!claim) return;
     hidePresentation(presentation.presentedView, presentation.containerView);
+    SGLog(@"redesign player menu: sheet hidden at present (menu %@)", contextMenuIn(sheet, 0) ? @"in the sheet" : @"not in the sheet yet");
     logDarkness(presentation.containerView ?: presentation.presentingViewController.view);
-    // A menu asked for from inside this call is never shown; from the next turn it is, and stays.
-    __weak UIViewController *weakMenu = menu;
+    __weak UIViewController *weakSheet = sheet;
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController *strongMenu = weakMenu;
-        SGRPlayerMenuTakeover *t = strongMenu ? takeoverFor(strongMenu) : nil;
-        if (!t) return;
-        // The sheet did not take the menu down, so a later close is the person's.
-        if (t.shown && !t.closed) t.sheetStoleMenu = NO;
-        t.waitingForSheet = NO;
-        pass(t);
-        openMenu(t);
+        adoptClaimedMenu(weakSheet);
     });
+    for (NSNumber *delay in @[@0.05, @0.16, @0.4]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIViewController *strong = weakSheet;
+            if (!strong || ![objc_getAssociatedObject(strong, &kClaimKey) boolValue]) return;
+            hidePresentation(sheetViewOf(strong), strong.presentationController.containerView);
+            adoptClaimedMenu(strong);
+        });
+    }
     // A claimed sheet whose menu is never taken over would stay out of sight with nothing in its place.
+    // While the glass menu is up the sheet stays hidden; showing it then is the two-menus bug.
     __weak UIPresentationController *weak = presentation;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kClaimWait * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIPresentationController *strong = weak;
         UIViewController *presented = strong.presentedViewController;
         if (!presented || objc_getAssociatedObject(presented, &kTakenKey) || ![objc_getAssociatedObject(presented, &kClaimKey) boolValue]) return;
+        hidePresentation(strong.presentedView, strong.containerView);
+        if (glassMenuIsUp()) {
+            SGLog(@"redesign player menu: sheet stays hidden, the glass menu is up");
+            return;
+        }
         SGLog(@"redesign player menu: no menu taken over in the ⋯'s sheet within %.0f s, the sheet shown", kClaimWait);
         objc_setAssociatedObject(presented, &kClaimKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         showPresentation(strong.presentedView, strong.containerView);
     });
+}
+
+- (void)presentationTransitionDidEnd:(BOOL)completed {
+    %orig;
+    UIPresentationController *presentation = (UIPresentationController *)self;
+    if (![objc_getAssociatedObject(presentation.presentedViewController, &kClaimKey) boolValue]) return;
+    hidePresentation(presentation.presentedView, presentation.containerView);
+    SGLog(@"redesign player menu: sheet kept hidden after present");
+    adoptClaimedMenu(presentation.presentedViewController);
 }
 
 - (void)containerViewDidLayoutSubviews {

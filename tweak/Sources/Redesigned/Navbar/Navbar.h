@@ -35,9 +35,8 @@ void SGRTabPicked(UIView *item);
 // TabBar.x: calls what the tap recognizers on `view` itself call, the way a real tap ends; NO when none did.
 BOOL SGRFireTapRecognizers(UIView *view);
 
-// SearchField.x. Selecting the Search tab opens Spotify's page; the field focuses only on a second
-// tap, the way Spotify treats a tap on the tab it is already showing. The first selection asks for
-// the field once it is on screen. A later call replaces one still waiting, and leaving the tab
+// SearchField.x. Selecting the Search tab opens Spotify's page and asks for the field, including
+// when the tab already looks selected. A later call replaces one still waiting, and leaving the tab
 // drops it.
 void SGRFocusSearchPage(void);
 void SGRCancelSearchFocus(void);
