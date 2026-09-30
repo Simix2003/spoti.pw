@@ -1,5 +1,66 @@
 # Changelog
 
+## beta-simix
+
+Entries for the `beta-simix-overnight` fork. Release Please does not version these; they are written so each one can accompany an upstream pull request. Nothing here is compiled or run on a device. Each heading is one task. **Fixed** and **Changed** are code. **Not changed** is a finding and no hook. **Known limits** is what was left.
+
+### Search tab
+
+* **Fixed:** The first tap on Search opens the Search page and focuses the field. With the mini player on, the trailing circle is a system search tab that was left with `automaticallyActivatesSearch` off, so the first tap only selected it and the field waited for a second tap. Search now focuses on selection. On either bar, a tap that arrives from another tab also activates Spotify's `SearchHeaderFind.SearchBar` once that button is on screen (Encore, fired the way the kit fires a concealed control). Leaving Search cancels a focus that has not landed yet.
+* **Fixed:** The trailing search circle no longer stays in the accent colour after another tab is selected. Its icon was a template image, and UIKit keeps that button on the bar's tint. The idle icon is now drawn in Spotify's idle grey (`#B3B3B3`) and the selected icon in the accent, both as original images, so the tint cannot stick.
+* **Changed:** The Search field and the Cancel button in the same row, when that row is shorter than 52pt, are grown to 52pt (the Search header's field alone is 48pt in `trees/search.txt` and is left as it is). Lists and Mod Settings are not walked.
+* **Known limits:** Not compiled (no Theos/iOS SDK here) and not run on a phone. The open-search row is found by a field (`UITextField`, `UISearchBar`, `SearchHeaderFind.SearchBar`, or an identifier containing `SearchField`) sharing a wide, short parent with a control whose title, accessibility label, or identifier matches the system search bar's Cancel title (Italian "Annulla" on an Italian phone) or contains "cancel". A Cancel Spotify draws some other way is not grown. Focusing calls Spotify's search button; if that button is not the field the second tap used to open, the system search tab's own field is what focuses, and typing still depends on Spotify. The accent-coloured circle is only restyled for the system search tab (mini player on, iOS 26).
+
+### Now Playing menu
+
+* **Fixed:** The redesigned player's ⋯ opens its glass menu on the tap, on the rows kept from the last menu (`spotifyglass.redesign.player.menuRows`), instead of waiting until Spotify's sheet has begun presenting. That wait was the lag. The sheet still opens underneath, out of sight, and is where the rows are read from.
+* **Changed:** While the sheet's table is still filling, it is looked at every 1/120 s rather than every 0.05 s, and the first look happens as soon as the table is taken over rather than one interval later. A `CADisplayLink` is not used. The 4 s give-up (`kRowsWait`), after which a sheet whose rows never arrive is shown as Spotify drew it, is unchanged.
+* **Known limits:** A sheet presented while the early menu is up dismisses that menu; the dismiss is put back on the next turn, so one frame can still flash. Not compiled and not run in `harness/playermenu/` (that harness needs the iOS simulator). The first menu of a launch has no cached rows, so it opens on the loading row until Spotify's table can be read.
+
+### Spotify DJ page
+
+* **Not changed.** The DJ playlist (down-chevron at the top left, ⋯ at the top right, opening a plain modal sheet) is not a screen this build restyles, and no class for it is proved here, so nothing was hooked. Home's DJ card is only `_TtC30Discovery_MediumDensityCardKit9DJMDCView` (`Redesigned/Home/HomeCards.x`): radius and the transcript, not the page it opens. Playlist, album, and artist glass are each tied to a class in that part's header. Playlist is `FTPViewController` / `SPTFreeTierPlaylistEncoreHeaderViewController`; its back button is the system navigation bar, and its ⋯ is `SGRPinnedMore` over `Components.UI.ContextMenuButton*`. Album and artist pin that same button. The glass dialog menu is only the Now Playing ⋯ (`Redesigned/Player/PlayerMenu.x`), for a sheet that starts within 3 s of that button and contains `ContextMenu_InternalImpl`. Playlist's ⋯ still opens Spotify's own sheet; `PlaylistMenu.x` adds Mix, then Sort, and only when `SGRPinnedMoreRecentPage()` says the pinned ⋯ opened it.
+* **Known limits:** A header whose leading control is a down-chevron, rather than the system back button, is not `HeaderNavigationBar` on those pages. Treating every sheet as the player menu would steal Share and the other sheets those pages push. No file under `trees/` is in this checkout, and there is no binary to read the DJ page's class or the ⋯ selector from. Unverified on a phone. A tree of that header, the two buttons, and the sheet the ⋯ presents is what a glass header would need.
+
+### Mini player expand
+
+* **Fixed:** With the Apple-style mini player on, an upward scroll expands the tab bar before the page is back at the top. `UITabBarMinimizeBehaviorOnScrollDown` (set in `Redesigned/Navbar/TabBar.x`) minimizes on the way down and, on iOS 26, comes back only at content offset 0. About 28pt toward the top, or a flick faster than 350pt/s, switches the behavior to `UITabBarMinimizeBehaviorNever`, which expands the bar. The next downward flick puts `OnScrollDown` back so minimize is unchanged.
+* **Changed:** An upward drag on the minimized capsule itself commits the same way (24pt, or a flick), instead of doing nothing. The sideways skip gesture is unchanged.
+* **Known limits:** `SPTBarInteractivePresentationController` is only named in a comment (`Shared/Player/PlayerEvents.x`). No selector for it is in this checkout, there is no `trees/` dump and no Spotify binary, so it was not hooked. Opening and closing the full player still follow Spotify's own progress on `SPTBarOverlayPresentationTransition`, which was already proven. Not compiled and not run on a phone. If UIKit ignores a behavior change made mid-drag, the expand waits until the finger lifts.
+
+### Mini player open
+
+* **Fixed:** A tap on the mini player now keeps asking Spotify's bar to open until the full player's background controller is on screen. The old path treated the first wide tap it invoked as success, and it also gave up while `SGPlayerTransitionEnds()` was still in the future, so a recognizer that ran and did not present was never tried again. That was not a queue-key gate: `SGPlayerState()` is not read on the way to opening.
+* **Fixed:** The capsule's own tap wins over the skip and expand pans, and over any other pan on that touch. Hit testing returns the capsule for a point on it or on the snug glass around it, so a platter cannot take the tap. Subviews of the capsule do not take touches.
+* **Changed:** `NPVBackgroundViewController` records appearing and on screen (`SGPlayerIsAppearing`, `SGPlayerIsOnScreen`). A present that has not reached `viewDidAppear` after a second clears that flag (`SGPlayerTransitionResetStuck`). Each open request, try, wait, success, and give-up is logged as `mini player:`.
+* **Not changed.** Ordered player-state reports in `Shared/Player/PlayerState.x` stay. They stop an older report replacing a newer one. They do not decide whether the bar opens the player. No new Spotify class was hooked.
+* **Known limits:** Not compiled and not run on a phone. The open is still Spotify's tap recognizer on the wide card (three quarters of the bar, or 120pt when the bar has not been laid out). A card recognizer that is absent for more than four tries, about a second and a half, is given up and the recognizers on the bar are logged. A second tap is not fired while the player is appearing, because Spotify's bar toggles. `SPTBarInteractivePresentationController` is still only a name in a comment, so its flags are not reset.
+
+### Artwork when the song changes
+
+* **Fixed:** The field behind the player cut to the next cover instead of crossfading with it. `SGRPlayerCoverWatcher` refused the centered cell until the cover list had stopped decelerating, so the new picture was published late. A cell already on the middle is published while the list is still settling; a finger still between two covers is not. The warp's fade clock started when the shrink was requested, and a large cover used that second up before the first blended frame, which is the cut. The clock now starts when the texture is ready. A request that waited more than a second still appears at once.
+* **Changed:** The crossfade runs for 0.45s. While it runs, the warp's display link prefers 120fps. Its maximum stays 120, including while the picture is only drifting (preferred 30), so nothing caps the player's transitions at 60. A sharper copy of the same picture (the bar's cover, then the player's) no longer starts a second fade.
+* **Known limits:** `PlayerArtwork.x` was not given its own transition. The square cover is one `CoverArtCellImpl` per queued track and the swipe between them is Spotify's list; a fade on the cell would run against that. Not compiled, and not run in `harness/player/` (that harness needs the iOS simulator). Reduce Motion still keeps the fade and drops the drift, which is what `SGRWarpPaceStill` already did.
+
+### Playlist Mix
+
+* **Changed:** On a redesigned playlist, Mix is the first row of the ⋯ sheet, above Sort. The row still fires Spotify's own `ListPlatform.ToolbarActions.MixButton` pill. Its title is the shortest string already on that pill (the word it draws), and a longer string Spotify already has on the pill is the line under it, so a status such as "Playlist mixata" is not the only label. A pill that reports itself selected draws the waveform in the accent with a check. The glyph is a waveform. No new wording is invented, and the pill row over the tracks stays closed up (`PlaylistRows.x`).
+* **Known limits:** Not compiled and not run on a phone or in `harness/playlist/` (that harness needs the iOS simulator). If the pill has only one string, the row has one line, that string. On and off are read from `selected` and `UIAccessibilityTraitSelected` only; a pill that shows its state some other way stays drawn as off. Someone else's playlist still has no Mix row, because Spotify draws no pill there.
+
+### Mixed playlist sort
+
+* **Not changed.** A mixed playlist is not reordered to Recently added by the mod. The redesigned ⋯ sheet already fires Spotify's own Sort control, and that sheet is the safe place to pick Recently added when Spotify offers it. No sort-sheet class or "Recently added" selector is proved in this checkout (`trees/` is absent, there is no binary), so nothing new was hooked. Finding: `docs/mixed-playlist-sort.md`.
+* **Known limits:** Mix stores transitions between adjacent tracks. Spotify's own reorder for that state is Smart Reorder (BPM and key, from Mix, then Edit), which is not Recently added and is not proved here either. Selecting Recently added by matching a translated label was not done.
+
+### CarPlay
+
+* **Not changed.** No CarPlay code. A sideloaded tweak cannot grow a CarPlay app: `com.apple.developer.carplay-audio` is restricted, `scripts/install.sh` re-signs with the user's profile, and the tweak cannot add the entitlement or a CarPlay scene. When Spotify's own CarPlay session is up, `LockScreenLyrics.x` already puts the current line in `MPMediaItemPropertyArtist` on `MPNowPlayingInfoCenter`, which is the dictionary `CPNowPlayingTemplate` shows. It does not set `MPMediaItemPropertyLyrics`, and that key is not a lyrics view. CarPlay's audio rules say not to show lyrics on the car screen, so nothing was added to push lines there. Animated artwork stays on the lock screen's iOS 26 keys. Findings: `docs/carplay-notes.md`.
+* **Known limits:** Not run on a car or a phone. No CarPlay class is proved in this checkout, so none was hooked. A head unit may keep the artist from the track change and ignore later line updates.
+
+### Downloaded songs
+
+* **Known limits:** The redesign does not draw a per-song downloaded mark. Playlist and album rows are Spotify's own cells, restyled in `PlaylistRows.x` and `AlbumRows.x`, and those cells are not given a download glyph. Only the entity-level download button is restyled (`SGRDownload.m`). Left as it is.
+
 ## [0.22.0](https://github.com/skopevoj/spoti.pw/compare/v0.21.1...v0.22.0) (2026-09-23)
 
 

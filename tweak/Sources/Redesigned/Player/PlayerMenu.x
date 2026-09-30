@@ -8,8 +8,9 @@
 // (kKnown; a number not known goes under More) and fired through that ListRow. The menu opens on the rows the
 // last menu had, kept across launches, and is updated in place once Spotify's are in.
 //
-// The menu opens from a button of the mod's own over the ⋯ (SGRPlayerMenuAnchor), once the sheet's
-// presentation has begun: a sheet presented under an open menu closes it. A page Spotify pushes onto its
+// The menu opens from a button of the mod's own over the ⋯ (SGRPlayerMenuAnchor) on the tap, on the
+// rows the last menu had. Spotify's sheet still arrives underneath and dismisses a menu it finds
+// open, so that one close is put back once the present returns. A page Spotify pushes onto its
 // sheet (Share) shows the sheet as Spotify draws it; so does a sheet whose rows cannot be read, or a menu the
 // system does not open. Speed and pitch's sliders open in a popover of their own.
 #import <objc/message.h>
@@ -26,8 +27,10 @@ static const NSTimeInterval kMenuAfterTap = 3;
 static const NSTimeInterval kRowsWait = 4;
 // A sheet hidden as its presentation begins and still without a menu taken over by then is shown again.
 static const NSTimeInterval kClaimWait = 1;
-// How often the table is looked at while the menu waits for Spotify's rows.
-static const NSTimeInterval kRowsPoll = 0.05;
+// How often the table is looked at while the menu waits for Spotify's rows. A fiftieth of a second
+// was a visible wait between the table gaining rows and the menu showing them; the player's
+// transitions run at 120Hz, and this wait stays under a frame without a display link.
+static const NSTimeInterval kRowsPoll = 1.0 / 120.0;
 // A menu the system has not shown by then is given up for Spotify's sheet.
 static const NSTimeInterval kShowWait = 0.8;
 // How long after the menu has closed a pick may still come in before the sheet is taken away.
@@ -85,6 +88,8 @@ static UIImage *symbol(NSString *name) {
 
 #pragma mark - the player's ⋯
 
+static void openEarly(UIView *button);
+
 @interface SGRPlayerMoreTapWatcher : NSObject <UIGestureRecognizerDelegate>
 @end
 
@@ -93,6 +98,15 @@ static UIImage *symbol(NSString *name) {
     UIView *button = [sender isKindOfClass:UIGestureRecognizer.class] ? ((UIGestureRecognizer *)sender).view : sender;
     sgr_moreButton = button;
     sgr_moreTappedAt = CACurrentMediaTime();
+    // The glass menu used to wait until Spotify's sheet had begun presenting. That wait is the lag.
+    openEarly(button);
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldReceiveTouch:(UITouch *)touch {
+    // Touch down, so the sheet Spotify presents on touch up is already inside the window that counts
+    // as the ⋯'s, even when Spotify's own action runs before this recognizer's.
+    sgr_moreButton = recognizer.view;
+    sgr_moreTappedAt = CACurrentMediaTime();
+    return YES;
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
     return YES;
@@ -417,6 +431,9 @@ static SGRPlayerMenuAnchor *anchorIn(UIView *button) {
 @property (nonatomic, copy) NSDictionary<NSString *, SGRPlayerMenuSpotifyRow *> *rowsByIdentifier;
 @property (nonatomic) NSTimeInterval tappedAt;
 @property (nonatomic, strong) NSTimer *poll;
+// The menu was opened on the tap, before Spotify's sheet exists. A present that then dismisses it
+// is the sheet arriving, not the person closing it, so the menu is put back.
+@property (nonatomic) BOOL waitingForSheet, sheetStoleMenu, reopenQueued;
 @property (nonatomic, copy) void (^pick)(SGRPlayerMenuTakeover *t);
 // The loading row's, while the menu has no rows at all to show.
 @property (nonatomic, copy) void (^loadingDone)(NSArray<UIMenuElement *> *elements);
@@ -628,8 +645,29 @@ static void pick(SGRPlayerMenuTakeover *t, void (^what)(SGRPlayerMenuTakeover *t
     if (t.closed) runPick(t);
 }
 
+static void openMenu(SGRPlayerMenuTakeover *t);
+
 static void menuClosed(SGRPlayerMenuTakeover *t) {
     if (!t || t.closed) return;
+    if (t.sheetStoleMenu && !t.pick) {
+        t.opened = NO;
+        t.shown = NO;
+        if (t.reopenQueued) return;
+        t.reopenQueued = YES;
+        __weak SGRPlayerMenuTakeover *weak = t;
+        // After the present returns: reopening inside it is dismissed again by the same present.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            SGRPlayerMenuTakeover *strong = weak;
+            if (!strong || strong.finished || strong.revealed) return;
+            strong.sheetStoleMenu = NO;
+            strong.reopenQueued = NO;
+            strong.waitingForSheet = NO;
+            SGLog(@"redesign player menu: the sheet closed the menu that opened on the tap, reopening");
+            openMenu(strong);
+        });
+        return;
+    }
+    t.waitingForSheet = NO;
     t.closed = YES;
     if (t.pick) {
         runPick(t);
@@ -752,6 +790,29 @@ static void showRows(SGRPlayerMenuTakeover *t) {
     }
 }
 
+static __weak SGRPlayerMenuTakeover *sgr_early;
+
+static void openEarly(UIView *button) {
+    if (!button.window) return;
+    SGRPlayerMenuTakeover *existing = sgr_early;
+    if (existing && !existing.finished && !existing.revealed && !existing.closed) return;
+    SGRPlayerMenuTakeover *t = [SGRPlayerMenuTakeover new];
+    t.tappedAt = sgr_moreTappedAt;
+    t.button = button;
+    t.waitingForSheet = YES;
+    NSArray<SGRPlayerMenuSpotifyRow *> *last = lastRows();
+    if (last.count) {
+        t.provisional = YES;
+        t.rows = last;
+        t.signature = signatureOf(last);
+        SGLog(@"redesign player menu: opens on the last menu's rows, before the sheet");
+    } else {
+        SGLog(@"redesign player menu: opens while Spotify's rows are read");
+    }
+    sgr_early = t;
+    openMenu(t);
+}
+
 static void openMenu(SGRPlayerMenuTakeover *t) {
     if (t.opened || t.revealed || t.finished) return;
     t.opened = YES;
@@ -848,20 +909,26 @@ static SGRPlayerMenuTakeover *takeoverFor(UIViewController *menu) {
         objc_setAssociatedObject(menu, &kTakeoverKey, NSNull.null, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return nil;
     }
-    SGRPlayerMenuTakeover *t = [SGRPlayerMenuTakeover new];
-    t.tappedAt = sgr_moreTappedAt ?: CACurrentMediaTime();
+    SGRPlayerMenuTakeover *t = sgr_early;
+    BOOL adopted = t && !t.finished && !t.revealed && !t.menu;
+    if (!adopted) {
+        t = [SGRPlayerMenuTakeover new];
+        t.tappedAt = sgr_moreTappedAt ?: CACurrentMediaTime();
+        t.button = sgr_moreButton;
+        NSArray<SGRPlayerMenuSpotifyRow *> *last = lastRows();
+        if (last.count) {
+            t.provisional = YES;
+            t.rows = last;
+            t.signature = signatureOf(last);
+        }
+        sgr_early = t;
+    }
     sgr_moreTappedAt = 0;
     t.menu = menu;
-    t.button = sgr_moreButton;
+    if (!t.button) t.button = sgr_moreButton;
     UIViewController *sheet = presentedSheet(menu);
     if (sheet) objc_setAssociatedObject(sheet, &kTakenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(menu, &kTakeoverKey, t, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    NSArray<SGRPlayerMenuSpotifyRow *> *last = lastRows();
-    if (last.count) {
-        t.provisional = YES;
-        t.rows = last;
-        t.signature = signatureOf(last);
-    }
 
     __weak SGRPlayerMenuTakeover *weak = t;
     t.poll = [NSTimer timerWithTimeInterval:kRowsPoll repeats:YES block:^(NSTimer *timer) {
@@ -874,6 +941,7 @@ static SGRPlayerMenuTakeover *takeoverFor(UIViewController *menu) {
         if (table && rowCount(table) > 0) pass(strong);
     }];
     [NSRunLoop.mainRunLoop addTimer:t.poll forMode:NSRunLoopCommonModes];
+    [t.poll fire];
     // Spotify's rows are waited on for as long as the menu is open, the table looked at until they are all
     // in. What is worth saying by kRowsWait is whether they are late, and whether they are there and unreadable.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kRowsWait * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -941,6 +1009,17 @@ static void logDarkness(UIView *anyView) {
     }
 }
 
+// A present while the menu opened on the tap is up is Spotify's sheet arriving: it dismisses that
+// menu, and the menu goes straight back rather than being treated as closed.
+%hook UIViewController
+- (void)presentViewController:(UIViewController *)viewController animated:(BOOL)animated completion:(void (^)(void))completion {
+    SGRPlayerMenuTakeover *early = sgr_early;
+    if (early && early.waitingForSheet && early.shown && !early.closed && !early.finished && !early.revealed)
+        early.sheetStoleMenu = YES;
+    %orig;
+}
+%end
+
 // The sheet and its dimming go out of sight as the presentation begins, before its first frame: the menu's
 // own appearance comes later than that, and hiding them only from there let the dimming's black and the sheet
 // show for a frame or two as the ⋯ was tapped (device, 2026-09-24). A presentation taken this way is claimed,
@@ -962,6 +1041,9 @@ static void logDarkness(UIView *anyView) {
         UIViewController *strongMenu = weakMenu;
         SGRPlayerMenuTakeover *t = strongMenu ? takeoverFor(strongMenu) : nil;
         if (!t) return;
+        // The sheet did not take the menu down, so a later close is the person's.
+        if (t.shown && !t.closed) t.sheetStoleMenu = NO;
+        t.waitingForSheet = NO;
         pass(t);
         openMenu(t);
     });

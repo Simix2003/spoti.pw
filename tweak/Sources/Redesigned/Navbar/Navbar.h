@@ -35,5 +35,15 @@ void SGRTabPicked(UIView *item);
 // TabBar.x: calls what the tap recognizers on `view` itself call, the way a real tap ends; NO when none did.
 BOOL SGRFireTapRecognizers(UIView *view);
 
+// SearchField.x. Selecting the Search tab opens Spotify's page; the field focuses only on a second
+// tap, the way Spotify treats a tap on the tab it is already showing. The first selection asks for
+// the field once it is on screen. A later call replaces one still waiting, and leaving the tab
+// drops it.
+void SGRFocusSearchPage(void);
+void SGRCancelSearchFocus(void);
+// A search field sharing its row with Cancel, shorter than the Search header's field, is grown to
+// that height. Walks `root` and leaves lists and Mod Settings alone. Cheap enough for a layout pass.
+void SGRRaiseSearchChrome(UIView *root);
+
 UIViewController *SGRNavbarSettingsPage(void);   // the tab editor, in Mod Settings
 UIViewController *SGRNavbarEditorPage(void);     // the tab editor alone, for the welcome tour

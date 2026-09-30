@@ -12,7 +12,7 @@
 //     PlaylistRows.x    the track rows on the field with no surface of their own, rounded artwork, a
 //                       hairline between them, and the curation pills collapsed
 //     PlaylistMenu.x    Sort and Mix, the two of the curation pills the ⋯ menu does not already offer,
-//                       put on that menu's own sheet
+//                       put on that menu's own sheet, Mix first and labelled from the pill
 //
 // Every hook installs only while Redesigned UI is on (SGRedesignedUI); the native look's do not then.
 // Threading: main thread only.

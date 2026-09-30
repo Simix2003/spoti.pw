@@ -8,3 +8,13 @@
 extern NSString *const SGPlayerTransitionNotification;
 extern NSString *const SGPlayerTransitionEndedNotification;
 CFTimeInterval SGPlayerTransitionEnds(void);
+
+// The full player's own background controller (NowPlaying_ScrollImpl.NPVBackgroundViewController),
+// the same one whose appearance announces the transition. On screen from viewDidAppear until
+// viewWillDisappear. Appearing from viewWillAppear until it is on screen, a dismiss starts, or
+// SGPlayerTransitionResetStuck clears a transition that never finished.
+BOOL SGPlayerIsOnScreen(void);
+BOOL SGPlayerIsAppearing(void);
+// Drops a transition flag whose completion has not run, once it has been going for a second.
+// No-op while the player is on screen or the transition is younger than that.
+void SGPlayerTransitionResetStuck(void);

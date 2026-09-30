@@ -258,7 +258,9 @@ Redesigned:
                   controls (shuffle, a prominent Play capsule taking its glyph and its word from Spotify's own button,
                   add), the find bar and the curation pills gone, and the track rows on the field with a hairline between them
                   (Playlist.h lists its files). Sort and Mix, the two of those pills the ⋯ menu does not already offer,
-                  are put on that menu's own sheet instead, above Spotify's rows, and fire Spotify's own buttons.
+                  are put on that menu's own sheet instead, above Spotify's rows. Mix is the first of those two
+                  and takes its word, and a second line when the pill already has a longer one, from Spotify's
+                  own pill. Both rows fire Spotify's own buttons.
                   Laid out on the Mac against harness/playlist/
     Album/        the album page laid out the same way, on the page the Creative Work Platform builds rather than the
                   playlist's, so it shares nothing with Playlist/ but the Kit: the cover full bleed dissolving into the

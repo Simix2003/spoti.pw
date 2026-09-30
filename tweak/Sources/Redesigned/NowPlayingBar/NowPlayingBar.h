@@ -28,11 +28,15 @@ CGRect SGRNowPlayingArtworkFrameIn(UIView *host);
 // the picture Spotify's bar shows now, nil before it has one, and the view that shows it;
 UIImage *SGRNowPlayingArtworkImage(void);
 UIImageView *SGRNowPlayingArtworkView(void);
-// a tap on Spotify's bar, which opens the player; NO when nothing on the bar took it.
+// Asks Spotify's bar to open the player, and keeps asking until the player is on screen.
+// YES once the request is taken (including when the player is already up).
 BOOL SGROpenPlayerFromBar(void);
 
 // MiniPlayer.m: the accessory's content view, and its card and artwork in `host`'s coordinates
 // (CGRectNull while it is not in a window).
 UIView *SGRMakeMiniPlayer(void);
+// Navbar/TabBar.x. The minimized bar otherwise stays down until the page is scrolled to the top.
+// No-op when the mini player is off or the bar is already expanded.
+void SGRExpandInlineBar(void);
 CGRect SGRMiniPlayerFrameIn(UIView *host, CGFloat *radius);
 CGRect SGRMiniPlayerArtworkFrameIn(UIView *host);

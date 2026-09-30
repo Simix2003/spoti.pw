@@ -37,7 +37,8 @@ UIImage *SGRWarpSampleArtwork(void);
 // Where the picture lies in the bounds; past it the picture's edge carries on. CGRectNull is the bounds.
 @property (nonatomic) CGRect pictureFrame;
 // Shrinks the image off the main thread, then crossfades to it (at once when not `animated`, when it
-// is the first, or when a second has gone by before the layer could draw it).
+// is the first, or when a second has gone by before the layer could draw it). The fade itself starts
+// when the texture is ready, so the time spent shrinking is not already used up.
 - (void)setArtwork:(UIImage *)image animated:(BOOL)animated;
 @end
 
