@@ -253,7 +253,10 @@ static void focusAttempt(NSInteger generation, int attempt) {
         }
     }
     if (!window) {
-        if (attempt >= 12) return;
+        if (attempt >= 12) {
+            SGLog(@"search tab: result field not on screen");
+            return;
+        }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             focusAttempt(generation, attempt + 1);
         });
@@ -261,20 +264,26 @@ static void focusAttempt(NSInteger generation, int attempt) {
     }
     if (searchFieldEditing(window)) {
         raiseSearchChrome(window, YES);
+        SGLog(@"search tab: result field is editing");
         return;
     }
     UIView *button = searchButtonIn(window);
-    if (button) {
-        static NSInteger activated;
-        if (activated != generation) {
-            activated = generation;
-            SGLog(@"search field: focusing %@", button.accessibilityIdentifier);
-            SGRActivate(button);
-        }
+    static NSInteger activationsFor;
+    static int activations;
+    if (activationsFor != generation) {
+        activationsFor = generation;
+        activations = 0;
+    }
+    // The header button is often missing on the first turns. Activate when it appears, and twice
+    // more if that did not leave a field editing: one shot used to be the end of the attempt.
+    if (button && activations < 3 && (activations == 0 || attempt == 4 || attempt == 8)) {
+        activations++;
+        SGLog(@"search tab: field focus attempted (%d) %@", attempt, button.accessibilityIdentifier);
+        SGRActivate(button);
         raiseSearchChrome(window, YES);
     }
     if (attempt >= 12) {
-        if (!button) SGLog(@"search field: not on screen %.2f s after the Search tab", 0.05 * attempt);
+        SGLog(@"search tab: result %@", button ? @"field did not focus" : @"field not on screen");
         return;
     }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -284,6 +293,7 @@ static void focusAttempt(NSInteger generation, int attempt) {
 
 void SGRFocusSearchPage(void) {
     NSInteger generation = ++sgr_focusGeneration;
+    SGLog(@"search tab: field focus attempted");
     dispatch_async(dispatch_get_main_queue(), ^{ focusAttempt(generation, 0); });
 }
 

@@ -189,7 +189,14 @@ BOOL SGRFireTapRecognizers(UIView *view) {
     return fired;
 }
 
-static void forwardTap(UIView *item) {
+static BOOL forwardTap(UIView *item) {
+    if (!item) return NO;
+    // Spotify's bar is left invisible and untouchable under the glass one. Its handler is invoked
+    // directly; interaction is put back for that call in case the handler checks it and drops the tap.
+    BOOL was = item.userInteractionEnabled;
+    CGFloat alpha = item.alpha;
+    item.userInteractionEnabled = YES;
+    if (item.alpha < 0.01) item.alpha = 0.02;
     __block BOOL sent = NO;
     SGForEachView(item, ^(UIView *v) {
         if (!sent) sent = SGRFireTapRecognizers(v);
@@ -200,6 +207,8 @@ static void forwardTap(UIView *item) {
         [(UIControl *)v sendActionsForControlEvents:UIControlEventTouchUpInside];
         sent = YES;
     });
+    item.userInteractionEnabled = was;
+    item.alpha = alpha;
     if (!sent) {
         NSMutableString *out = [NSMutableString stringWithFormat:@"tab bar: nothing to tap in %@", NSStringFromClass(item.class)];
         SGForEachView(item, ^(UIView *v) {
@@ -207,6 +216,7 @@ static void forwardTap(UIView *item) {
         });
         SGLogLong(@"navbar", out);
     }
+    return sent;
 }
 
 static UITabBarItem *itemAtPoint(UITabBar *bar, CGPoint point) {
@@ -238,12 +248,19 @@ static UITabBarItem *itemAtPoint(UITabBar *bar, CGPoint point) {
     UIView *source = self.sources[index];
     BOOL search = isSearchItem(source);
     BOOL already = isActive(source);
+    if (search) {
+        id icon = encoreIconOf(iconIn(source));
+        NSString *iconName = [icon respondsToSelector:@selector(name)] ? [icon name] : @"";
+        SGLog(@"search tab: tap received title %@ icon %@ already %d", labelIn(source).text ?: @"", iconName, already);
+    }
     SGRTabPicked(source);
     // Home tapped while on Home pops Spotify's stack, which would take Mod Settings straight off it.
-    if (!self.holding) forwardTap(source);
-    // Already on Search, Spotify's own tap focuses the field. Coming from another tab, that tap only
-    // opens the page, so the field is asked for once the page has it.
-    if (search && !already && !self.holding) SGRFocusSearchPage();
+    BOOL sent = NO;
+    if (!self.holding) sent = forwardTap(source);
+    if (search) SGLog(@"search tab: tab selected, Spotify tap %@", sent ? @"fired" : @"not fired");
+    // Coming from another tab, Spotify's tap only opens the page. Already on Search, the same tap
+    // can miss the field, so both ask for it.
+    if (search && !self.holding) SGRFocusSearchPage();
     else if (!search) SGRCancelSearchFocus();
     // Spotify repaints its labels a moment later; a tap it did not take snaps the selection back.
     UIView *stockBar = self.stockBar;
@@ -563,9 +580,14 @@ static __weak UIScrollView *sg_pageScroll;
 // page is selected, not when a page names another one later (simulator: toggling the behaviour or an
 // appearance pass on the page do not do it), so the selection goes to another tab and back, unseen.
 static BOOL sg_flipping;
+// While an upward drag is settling the bar above the tabs, the page's scroll view is unlinked so
+// UIKit cannot keep a fractional minimize tied to the offset. nameScrollView would put it straight
+// back; it waits out that one turn.
+static BOOL sg_holdScrollLink;
 static void searchPageScroll(void);
 
 static void nameScrollView(void) {
+    if (sg_holdScrollLink) return;
     SGRInlineTabs *tabs = sg_inlineTabs;
     UIViewController *page = tabs.selectedViewController;
     UIScrollView *scroll = sg_pageScroll;
@@ -627,10 +649,42 @@ static void nameScrollView(void) {
     return nil;
 }
 
+// A tab button inside the bar, rather than the glass around the mini player. The rim used to be wide
+// enough to cover the trailing Search circle, so that tap never reached the tab.
+- (BOOL)hitIsTabControl:(UIView *)hit {
+    UITabBar *bar = self.tabs.tabBar;
+    UIView *mini = nil;
+    if (@available(iOS 26.0, *)) mini = self.tabs.bottomAccessory.contentView;
+    if (!hit || !bar || ![hit isDescendantOfView:bar]) return NO;
+    if (mini && (hit == mini || [hit isDescendantOfView:mini])) return NO;
+    for (UIView *v = hit; v && v != bar; v = v.superview) {
+        if (mini && v == mini) return NO;
+        if ([v isKindOfClass:UIControl.class]) return YES;
+        NSString *name = NSStringFromClass(v.class);
+        if ([name containsString:@"Button"] || [name containsString:@"TabBarItem"]) return YES;
+    }
+    return NO;
+}
+
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *miniHit = [self miniPlayerHit:point event:event];
-    if (miniHit) return miniHit;
     UIView *hit = [super hitTest:point withEvent:event];
+    UIView *miniHit = [self miniPlayerHit:point event:event];
+    if (miniHit && [self hitIsTabControl:hit]) {
+        UIView *mini = nil;
+        if (@available(iOS 26.0, *)) mini = self.tabs.bottomAccessory.contentView;
+        CGPoint inMini = mini ? [mini convertPoint:point fromView:self] : CGPointZero;
+        // The capsule itself still opens the player. Only the glass past its bounds yields to a tab.
+        if (!mini || ![mini pointInside:inMini withEvent:event]) {
+            UITabBar *bar = self.tabs.tabBar;
+            CGPoint inBar = [bar convertPoint:point fromView:self];
+            if (inBar.x >= CGRectGetWidth(bar.bounds) - 96) {
+                static NSUInteger yielded;
+                if (yielded++ < 12) SGLog(@"search tab: tap received, glass rim yielded to %@", NSStringFromClass(hit.class));
+            }
+            return hit;
+        }
+    }
+    if (miniHit) return miniHit;
     UITabBar *bar = self.tabs.tabBar;
     // Expanded, the accessory is not inside the bar and UIKit's views around it are not named for it.
     for (UIView *v = hit; v && v != self; v = v.superview) {
@@ -674,6 +728,61 @@ static const CGFloat kExpandVelocity = 350;
     }
 }
 
+// OnScrollDown only finishes the expand when the offset is back at the top, and switching the
+// behavior to Never leaves a drag that ended partway sitting between the inline slot and the slot
+// above the bar. Unlinking the scroll view drops that fractional progress; Never then keeps the
+// accessory up. The link comes back on the next turn so a later downward drag can still minimize.
+- (void)settleAboveBar {
+    if (@available(iOS 26.0, *)) {
+        if (!self.bottomAccessory) return;
+        BOOL needMove = self.minimized || [self accessoryIsPartway];
+        _expandHeld = YES;
+        self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorNever;
+        if (!needMove) {
+            SGLog(@"tab bar: stays above the bar");
+            return;
+        }
+        UIViewController *page = self.selectedViewController;
+        UIScrollView *scroll = sg_pageScroll;
+        if (!scroll) scroll = [page contentScrollViewForEdge:NSDirectionalRectEdgeBottom];
+        if (page && scroll) {
+            sg_holdScrollLink = YES;
+            [page setContentScrollView:nil forEdge:NSDirectionalRectEdgeAll];
+        }
+        SGLog(@"tab bar: settles above the bar (minimized %d)", self.minimized);
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            SGRInlineTabs *strong = weakSelf;
+            if (!strong) {
+                sg_holdScrollLink = NO;
+                return;
+            }
+            if (strong.minimized && strong.bottomAccessory) {
+                UITabAccessory *accessory = strong.bottomAccessory;
+                [strong setBottomAccessory:nil animated:NO];
+                [strong setBottomAccessory:accessory animated:YES];
+                SGLog(@"tab bar: accessory put back above the bar");
+            }
+            sg_holdScrollLink = NO;
+            if (strong->_expandHeld && page && scroll) [page setContentScrollView:scroll forEdge:NSDirectionalRectEdgeAll];
+        });
+    }
+}
+
+// Straddling the top of the tab bar: not in the slot above it, and not in the inline slot.
+- (BOOL)accessoryIsPartway {
+    if (@available(iOS 26.0, *)) {
+        UIView *mini = self.bottomAccessory.contentView;
+        if (!mini.window || !self.tabBar.window) return NO;
+        CGRect miniFrame = [mini.superview convertRect:mini.frame toView:nil];
+        CGRect barFrame = [self.tabBar convertRect:self.tabBar.bounds toView:nil];
+        if (CGRectGetMaxY(miniFrame) <= CGRectGetMinY(barFrame) + 12) return NO;
+        return CGRectGetMinY(miniFrame) < CGRectGetMinY(barFrame) - 8
+            && CGRectGetMaxY(miniFrame) > CGRectGetMinY(barFrame) + 8;
+    }
+    return NO;
+}
+
 - (void)armMinimizeAfterExpand {
     if (!_expandHeld) return;
     _expandHeld = NO;
@@ -696,13 +805,22 @@ static const CGFloat kExpandVelocity = 350;
         if (_dragMayMinimize && velocity.y < -80 && fabs(velocity.y) > fabs(velocity.x)) [self armMinimizeAfterExpand];
         return;
     }
-    if (pan.state != UIGestureRecognizerStateChanged && pan.state != UIGestureRecognizerStateEnded) return;
     CGFloat dy = [self cappedOffsetOf:scroll] - _dragAnchor;
     CGPoint velocity = [pan velocityInView:scroll];
     BOOL vertical = fabs(velocity.y) >= fabs(velocity.x);
     // Finger moving down scrolls toward the top: dy goes negative, velocity.y is positive.
     BOOL pulledUp = dy < -kExpandTravel;
     BOOL flungUp = vertical && velocity.y > kExpandVelocity && dy < -8;
+    if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled) {
+        BOOL upward = dy < -8 || (vertical && velocity.y > 120);
+        BOOL downward = dy > 8 || (vertical && velocity.y < -120);
+        // A downward drag is left to minimize. An upward one, or a finger lifted while the capsule
+        // is between the two slots, snaps it above the bar instead of leaving it halfway.
+        if (upward || ([self accessoryIsPartway] && !downward)) [self settleAboveBar];
+        else if (_dragMayMinimize && (dy > 8 || (vertical && velocity.y < -kExpandVelocity))) [self armMinimizeAfterExpand];
+        return;
+    }
+    if (pan.state != UIGestureRecognizerStateChanged) return;
     if (pulledUp || flungUp) [self expandForPartialDrag];
     if (_dragMayMinimize && (dy > 8 || (vertical && velocity.y < -kExpandVelocity))) [self armMinimizeAfterExpand];
 }
@@ -775,10 +893,18 @@ static const CGFloat kExpandVelocity = 350;
     UIView *source = index < self.sources.count ? self.sources[index] : nil;
     BOOL search = isSearchItem(source);
     BOOL already = isActive(source);
+    if (search) {
+        id icon = encoreIconOf(iconIn(source));
+        NSString *iconName = [icon respondsToSelector:@selector(name)] ? [icon name] : @"";
+        SGLog(@"search tab: tap received title %@ icon %@ already %d", labelIn(source).text ?: @"", iconName, already);
+    }
     if (source) SGRTabPicked(source);
     // Home tapped while on Home pops Spotify's stack, which would take Mod Settings straight off it.
-    if (source && !self.holding) forwardTap(source);
-    if (search && !already && !self.holding) SGRFocusSearchPage();
+    BOOL sent = source && !self.holding && forwardTap(source);
+    if (search) SGLog(@"search tab: tab selected, Spotify tap %@", sent ? @"fired" : @"not fired");
+    // UISearchTab's own search mode would open on the empty stand-in page. Spotify's field is asked
+    // for here, including when the tab already looks selected and the field never took focus.
+    if (search && !self.holding) SGRFocusSearchPage();
     else if (!search) SGRCancelSearchFocus();
     UIView *stockBar = self.stockBar;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -905,11 +1031,12 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
                 UISearchTab *search = [[UISearchTab alloc] initWithViewControllerProvider:^UIViewController *(UITab *t) { return inlinePage(t); }];
                 search.title = title;
                 search.image = glyphOf(source, NO);
-                // Button appearance (HIG): selecting the search circle focuses its field. Left at
-                // NO, the first tap only selects the tab and opens the page, and the field waits
-                // for a second tap. Only the Search tab: the trailing circle is whichever tab is
-                // last, and Create should not open a field.
-                search.automaticallyActivatesSearch = isSearchItem(source);
+                // The trailing circle is a UISearchTab so UIKit keeps it beside the minimized bar.
+                // automaticallyActivatesSearch opens UIKit's search on this tab's view controller,
+                // which is an empty stand-in, not Spotify's Search page: the tap then never focuses
+                // Spotify's field. The circle only selects; shouldSelectTab forwards to Spotify and
+                // asks for the field. Create, when it is the last tab, must not open a field either.
+                search.automaticallyActivatesSearch = NO;
                 tab = search;
             } else {
                 NSString *identifier = [NSString stringWithFormat:@"spotifyglass.tab.%lu", (unsigned long)list.count];
@@ -949,8 +1076,7 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
         if (active && !selected) selected = tab;
         if ([tab isKindOfClass:UISearchTab.class]) {
             UISearchTab *search = (UISearchTab *)tab;
-            BOOL want = isSearchItem(sources[i]);
-            if (search.automaticallyActivatesSearch != want) search.automaticallyActivatesSearch = want;
+            if (search.automaticallyActivatesSearch) search.automaticallyActivatesSearch = NO;
         }
         UIImage *image = [tab isKindOfClass:UISearchTab.class] ? searchTabImage(sources[i], active) : glyphOf(sources[i], active);
         missing |= !image;
@@ -1054,7 +1180,7 @@ static void searchPageScroll(void) {
 @end
 
 void SGRExpandInlineBar(void) {
-    [sg_inlineTabs expandForPartialDrag];
+    [sg_inlineTabs settleAboveBar];
 }
 
 static char kDragKey;
