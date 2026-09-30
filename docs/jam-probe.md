@@ -2,7 +2,7 @@
 
 A read-only dump for one phone. It does not join a Jam, change the queue, or open a connection. It does not run at launch. Nothing was hooked: the walk uses the class list, the views on screen, and the player state the mod already reads.
 
-The file is `Documents/spotifyplus-jam-probe-<yyyyMMdd-HHmmss>.txt`. One line is logged as `jam probe:`.
+The file is `Documents/spotifyplus-jam-probe-<yyyyMMdd-HHmmss>.txt`. One line is logged as `jam probe:`. That line is also in the on-phone log (`docs/logs.md`), so a sideload without a cable can send it with **Share logs**.
 
 ## Run it
 
