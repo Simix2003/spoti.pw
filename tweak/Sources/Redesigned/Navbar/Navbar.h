@@ -2,6 +2,8 @@
 // (Navbar.x, NavbarLayout.m), which the redesign keeps apart from the native look's: an ordered list of
 // entries, each a dictionary. An entry with a URI is a tab of the mod's own; one without names
 // one of Spotify's, by the label under its icon. No list at all is Spotify's order, all shown.
+// On iOS 26 the bar is a UITabBarController so Search is a trailing UISearchTab circle; the Apple
+// Music style player setting only adds the mini player accessory and minimize-on-scroll.
 #import <UIKit/UIKit.h>
 
 #define SGRKeyNavbar @"spotifyglass.redesign.navbar"
@@ -25,7 +27,9 @@ NSURL *SGRNavbarTabURL(NSString *uri);
 
 // Navbar.x, called from the tab bar's layout passes in TabBar.x.
 void SGRComposeTabBar(UIView *tabBar);
-void SGRLogTabBarRow(UIView *tabBar);
+// NO once the navbar list has hidden this item. Spotify laying the view out again does not put it
+// back on the glass bar; an item the list has not marked stays shown.
+BOOL SGRNavbarShowsItem(UIView *item);
 // Lays the bar out again after the Navbar page changes something, so it does not wait for a touch.
 void SGRRefreshTabBar(void);
 // The item of a tab of the mod's own whose page is on the stack on screen, which the glass bar lights
@@ -34,6 +38,15 @@ UIView *SGRCurrentModTab(void);
 void SGRTabPicked(UIView *item);
 // TabBar.x: calls what the tap recognizers on `view` itself call, the way a real tap ends; NO when none did.
 BOOL SGRFireTapRecognizers(UIView *view);
+
+// SearchField.x. Selecting the Search tab opens Spotify's page and asks for the field, including
+// when the tab already looks selected. A later call replaces one still waiting, and leaving the tab
+// drops it.
+void SGRFocusSearchPage(void);
+void SGRCancelSearchFocus(void);
+// A search field sharing its row with Cancel, shorter than the Search header's field, is grown to
+// that height. Walks `root` and leaves lists and Mod Settings alone. Cheap enough for a layout pass.
+void SGRRaiseSearchChrome(UIView *root);
 
 UIViewController *SGRNavbarSettingsPage(void);   // the tab editor, in Mod Settings
 UIViewController *SGRNavbarEditorPage(void);     // the tab editor alone, for the welcome tour

@@ -24,7 +24,16 @@ static const CGFloat kIconSize = 24;
 static const CGFloat kIconTop = 12.5;
 static const CGFloat kLabelTop = 35;
 static const CGFloat kLabelHeight = 14;
-static char kCustomKey, kOrderKey;
+static char kCustomKey, kOrderKey, kShownKey;
+
+BOOL SGRNavbarShowsItem(UIView *item) {
+    NSNumber *shown = objc_getAssociatedObject(item, &kShownKey);
+    return !shown || shown.boolValue;
+}
+
+static void markShown(UIView *item, BOOL shown) {
+    objc_setAssociatedObject(item, &kShownKey, @(shown), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 
 // Where Spotify's own items keep their icon and label, read off one of them every pass, so an item of
 // the mod's own sits on the same line as its neighbours.
@@ -239,8 +248,10 @@ void SGRComposeTabBar(UIView *tabBar) {
                 else custom[ident] = item = [[SGRTabItemView alloc] initWithEntry:entry];
                 [keep addObject:ident];
                 [wanted addObject:item];
+                markShown(item, YES);
             } else if (stockViews[ident]) {
                 stockViews[ident].hidden = hidden;
+                markShown(stockViews[ident], !hidden);
                 [wanted addObject:stockViews[ident]];
             }
         }
@@ -251,6 +262,7 @@ void SGRComposeTabBar(UIView *tabBar) {
         UIView *item = stockViews[ident];
         if (!item || [wanted containsObject:item]) continue;
         item.hidden = NO;
+        markShown(item, YES);
         [wanted addObject:item];
     }
     for (NSString *ident in custom.allKeys) {
@@ -262,7 +274,10 @@ void SGRComposeTabBar(UIView *tabBar) {
     // A bar with nothing on it would strand whoever emptied it, so the last word is Spotify's.
     BOOL empty = YES;
     for (UIView *item in wanted) if (!item.hidden) empty = NO;
-    if (empty) for (UIView *item in wanted) item.hidden = NO;
+    if (empty) for (UIView *item in wanted) {
+        item.hidden = NO;
+        markShown(item, YES);
+    }
 
     // Items of the mod's own join the stack at the end, where they are past whatever Spotify
     // counts, and Spotify's own keep the places it gave them.
@@ -354,46 +369,6 @@ void SGRRefreshTabBar(void) {
     [sg_navbarRoot setNeedsLayout];
 }
 
-// What the row settled on, logged whenever it changes: `make log` then says whether the items fit,
-// what is holding their width, and in what order the bar ended up.
-void SGRLogTabBarRow(UIView *tabBar) {
-    UIStackView *stack = SGRowIn(tabBar);
-    if (!stack) return;
-    // It runs on every pass of the bar, so the description is only built when the frames moved.
-    NSMutableData *frames = [NSMutableData data];
-    CGRect own[] = {tabBar.frame, stack.frame};
-    [frames appendBytes:own length:sizeof(own)];
-    for (UIView *item in stack.arrangedSubviews) {
-        CGRect frame = item.hidden ? CGRectNull : item.frame;
-        [frames appendBytes:&frame length:sizeof(frame)];
-    }
-    static NSData *lastFrames;
-    if ([frames isEqualToData:lastFrames]) return;
-    lastFrames = frames;
-    NSMutableString *out = [NSMutableString stringWithFormat:@"row in %@ %@, icon %@ label %@, stack %@ axis %ld dist %ld align %ld spacing %.1f autolayout %d",
-                            NSStringFromClass(tabBar.class), NSStringFromCGRect(tabBar.frame),
-                            NSStringFromCGRect(sg_iconBox), NSStringFromCGRect(sg_labelBox), NSStringFromCGRect(stack.frame),
-                            (long)stack.axis, (long)stack.distribution, (long)stack.alignment, stack.spacing,
-                            !stack.translatesAutoresizingMaskIntoConstraints];
-    NSUInteger index = 0;
-    for (UIView *item in stack.arrangedSubviews) {
-        [out appendFormat:@"\n  %lu %@ %@%@ autolayout %d", (unsigned long)index++, NSStringFromClass(item.class),
-             NSStringFromCGRect(item.frame), item.hidden ? @" hidden" : @"",
-             !item.translatesAutoresizingMaskIntoConstraints];
-        for (NSLayoutConstraint *c in item.constraints) {
-            if (c.firstAttribute == NSLayoutAttributeWidth || c.secondAttribute == NSLayoutAttributeWidth) [out appendFormat:@"\n    %@", c];
-        }
-    }
-    for (NSLayoutConstraint *c in stack.constraints) [out appendFormat:@"\n  own %@", c];
-    for (NSLayoutConstraint *c in stack.superview.constraints) {
-        if (c.firstItem == stack || c.secondItem == stack) [out appendFormat:@"\n  held %@", c];
-    }
-    static NSString *last;
-    if ([out isEqualToString:last]) return;
-    last = [out copy];
-    SGLogLong(@"navbar", out);
-}
-
 // The dispatcher pushes the page a tab of the mod's own opens straight from the tap, well inside a second.
 %hook SPNavigationController
 - (void)pushViewController:(UIViewController *)page animated:(BOOL)animated {
@@ -407,23 +382,6 @@ void SGRLogTabBarRow(UIView *tabBar) {
 }
 %end
 
-// Whether Spotify reads its own item list through this ObjC bridge decides whether the bar can be
-// composed at the model level, where the order, the taps and the widths would all follow by
-// themselves, instead of by moving views about. Silence in the log says it cannot.
-%hook _TtC28NavigationUI_TabBarItemsImpl29TabBarItemsNavigationListImpl
-- (NSArray *)items {
-    NSArray *items = %orig;
-    NSMutableString *out = [NSMutableString stringWithFormat:@"list read, %lu items", (unsigned long)items.count];
-    for (id item in items) [out appendFormat:@"\n  %@ · %@", [item valueForKey:@"title"], [item valueForKey:@"viewURI"]];
-    static NSString *last;
-    if (![out isEqualToString:last]) {
-        last = [out copy];
-        SGLogLong(@"navbar", out);
-    }
-    return items;
-}
-%end
-
 %ctor {
     if (!SGRedesignedUI()) return;
     %init;
@@ -432,6 +390,5 @@ void SGRLogTabBarRow(UIView *tabBar) {
         @"SPTEncoreIconView",
         @"SPTEncoreLabel",
         @"SPNavigationController",
-        @"_TtC28NavigationUI_TabBarItemsImpl29TabBarItemsNavigationListImpl",
     ]);
 }

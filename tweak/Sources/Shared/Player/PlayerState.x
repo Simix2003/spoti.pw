@@ -1,6 +1,7 @@
 // PlayerState.h names the hooks and why they are the ones.
 #import "Core/SGCore.h"
 #import "PlayerState.h"
+#import <stdatomic.h>
 
 NSString *SGURIString(id uri) {
     if ([uri isKindOfClass:NSString.class]) return uri;
@@ -24,12 +25,29 @@ SPTPlayerState *SGPlayerState(void) {
     return sg_playerState;
 }
 
+// The queue, nearest first, so adding a track is a change even when the playing track is not.
+// The whole list is not needed: an edit past the first dozen still changes the count.
+static NSString *trackListKey(NSArray *tracks) {
+    if (![tracks isKindOfClass:NSArray.class] || tracks.count == 0) return @"0";
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    NSUInteger count = MIN(tracks.count, 12);
+    for (NSUInteger i = 0; i < count; i++) {
+        id track = tracks[i];
+        id uri = [track respondsToSelector:@selector(URI)] ? [track URI] : nil;
+        [parts addObject:SGURIString(uri) ?: @""];
+    }
+    return [NSString stringWithFormat:@"%lu:%@", (unsigned long)tracks.count, [parts componentsJoinedByString:@","]];
+}
+
 // What an observer is told about; the state object itself is new with every position report.
 static NSString *keyOf(SPTPlayerState *state) {
     SPTPlayerOptions *options = [state respondsToSelector:@selector(options)] ? state.options : nil;
     BOOL shuffling = [options respondsToSelector:@selector(shufflingContext)] && options.shufflingContext;
-    return [NSString stringWithFormat:@"%@|%@|%d%d%d%d", SGURIString(state.track.URI), SGURIString(state.contextURI),
-            state.isPaused, state.isPlaying, [state respondsToSelector:@selector(isLoading)] && state.isLoading, shuffling];
+    NSArray *future = [state respondsToSelector:@selector(future)] ? state.future : nil;
+    NSArray *reverse = [state respondsToSelector:@selector(reverse)] ? state.reverse : nil;
+    return [NSString stringWithFormat:@"%@|%@|%d%d%d%d|%@|%@", SGURIString(state.track.URI), SGURIString(state.contextURI),
+            state.isPaused, state.isPlaying, [state respondsToSelector:@selector(isLoading)] && state.isLoading, shuffling,
+            trackListKey(future), trackListKey(reverse)];
 }
 
 static void publish(SPTPlayerState *state) {
@@ -40,11 +58,25 @@ static void publish(SPTPlayerState *state) {
     for (id<SGPlayerStateObserver> observer in sg_stateObservers.allObjects) [observer playerStateDidChange:state];
 }
 
+// Call order. A report that has already been overtaken on the main queue is dropped: the platform
+// calls in from more than one thread, and a state dispatched earlier was landing after the one that
+// followed it and putting the previous track back. Seen after a queue edit, which reports in a burst.
+static _Atomic uint64_t sg_reportSerial;
+static uint64_t sg_appliedSerial;
+
 static void report(id state, BOOL platform) {
     if (![state isKindOfClass:objc_getClass("SPTPlayerState")]) return;
+    uint64_t serial = atomic_fetch_add_explicit(&sg_reportSerial, 1, memory_order_relaxed) + 1;
     dispatch_block_t apply = ^{
         if (platform) sg_platformReported = YES;
         else if (sg_platformReported) return;
+        if (serial < sg_appliedSerial) {
+            static NSUInteger logged;
+            if (logged++ < 8) SGLog(@"player state: dropped an older report (%llu behind %llu)",
+                                    (unsigned long long)serial, (unsigned long long)sg_appliedSerial);
+            return;
+        }
+        sg_appliedSerial = serial;
         publish(state);
     };
     if (NSThread.isMainThread) apply();

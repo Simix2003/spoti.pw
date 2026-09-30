@@ -12,6 +12,7 @@
 #import "SGRAccent.h"
 #import "SGRDownload.h"
 #import "SGRReveal.h"
+#import <math.h>
 
 // The capsule: the glyph is Spotify's own 48pt canvas with the triangle small in the middle of it, so the
 // lead is short and the gap to the word comes out of the canvas itself.
@@ -46,10 +47,277 @@ static NSString *wordIn(UIView *button) {
 
 #pragma mark - the Play capsule
 
+// How far the halo reaches past the capsule. The action row leaves 16pt between buttons;
+// the header keeps 14pt under Play, so this stays inside both.
+static const CGFloat kGlowSpread = 11;
+
+static UIColor *sgr_shiftHue(UIColor *color, CGFloat turn) {
+    CGFloat h = 0, s = 0, b = 0, a = 1;
+    if (![color getHue:&h saturation:&s brightness:&b alpha:&a]) return color;
+    return [UIColor colorWithHue:fmod(h + turn, 1) saturation:MIN(1, s) brightness:b alpha:a];
+}
+
+static CGFloat sgr_seedTurn(NSString *seed) {
+    if (!seed.length) return 0;
+    NSUInteger hash = 2166136261u;
+    for (NSUInteger i = 0; i < seed.length; i++) hash = (hash ^ [seed characterAtIndex:i]) * 16777619u;
+    return (hash % 360) / 360.0;
+}
+
+static NSArray<UIColor *> *sgr_defaultGlow(CGFloat turn) {
+    NSArray<UIColor *> *base = @[
+        [UIColor colorWithRed:0.49 green:0.36 blue:1 alpha:1],
+        [UIColor colorWithRed:0.35 green:0.78 blue:0.98 alpha:1],
+        [UIColor colorWithRed:1 green:0.42 blue:0.60 alpha:1],
+        [UIColor colorWithRed:0.37 green:0.55 blue:1 alpha:1],
+    ];
+    if (turn < 0.001) return base;
+    NSMutableArray<UIColor *> *shifted = [NSMutableArray arrayWithCapacity:base.count];
+    for (UIColor *color in base) [shifted addObject:sgr_shiftHue(color, turn)];
+    return shifted;
+}
+
+// A few vivid hues from the cover, or nil when the picture is grey. One small bitmap, off the main thread.
+static void sgr_colorsFromCover(UIImage *image, void (^done)(NSArray<UIColor *> *colors)) {
+    CGImageRef cg = image.CGImage;
+    if (!cg || !done) {
+        if (done) done(nil);
+        return;
+    }
+    CGImageRetain(cg);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        const size_t n = 24;
+        CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+        uint8_t *px = calloc(n * n * 4, 1);
+        CGContextRef ctx = CGBitmapContextCreate(px, n, n, 8, n * 4, space, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+        CGColorSpaceRelease(space);
+        NSArray<UIColor *> *colors = nil;
+        if (ctx) {
+            CGContextDrawImage(ctx, CGRectMake(0, 0, n, n), cg);
+            CGContextRelease(ctx);
+            double score[12] = {0};
+            for (size_t i = 0; i < n * n; i++) {
+                CGFloat r = px[i * 4] / 255.0, g = px[i * 4 + 1] / 255.0, b = px[i * 4 + 2] / 255.0;
+                if (px[i * 4 + 3] < 128) continue;
+                CGFloat maxC = MAX(r, MAX(g, b)), minC = MIN(r, MIN(g, b));
+                CGFloat sat = maxC > 0 ? (maxC - minC) / maxC : 0;
+                if (sat < 0.28 || maxC < 0.18 || maxC > 0.97) continue;
+                CGFloat hue = 0;
+                CGFloat span = maxC - minC;
+                if (maxC == r) hue = (g - b) / span;
+                else if (maxC == g) hue = 2 + (b - r) / span;
+                else hue = 4 + (r - g) / span;
+                hue = fmod(hue / 6.0 + 1, 1);
+                int bin = (int)(hue * 12) % 12;
+                score[bin] += sat;
+            }
+            int best[3] = {-1, -1, -1};
+            for (int pick = 0; pick < 3; pick++) {
+                int found = -1;
+                for (int bin = 0; bin < 12; bin++) {
+                    if (score[bin] < 0.8) continue;
+                    if (found < 0 || score[bin] > score[found]) found = bin;
+                }
+                if (found < 0) break;
+                best[pick] = found;
+                score[found] = 0;
+            }
+            if (best[1] >= 0) {
+                NSMutableArray<UIColor *> *picked = [NSMutableArray array];
+                for (int pick = 0; pick < 3 && best[pick] >= 0; pick++) {
+                    CGFloat hue = (best[pick] + 0.5) / 12.0;
+                    [picked addObject:[UIColor colorWithHue:hue saturation:0.72 brightness:1 alpha:1]];
+                }
+                if (picked.count >= 2) colors = picked;
+            }
+        }
+        free(px);
+        CGImageRelease(cg);
+        dispatch_async(dispatch_get_main_queue(), ^{ done(colors); });
+    });
+}
+
+static UIImage *sgr_glowRing(CGSize capsule, CGFloat spread) {
+    CGSize size = CGSizeMake(capsule.width + spread * 2, capsule.height + spread * 2);
+    UIGraphicsBeginImageContextWithOptions(size, NO, 0);
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    CGRect edge = CGRectInset(CGRectMake(0, 0, size.width, size.height), spread, spread);
+    edge = CGRectInset(edge, 1.5, 1.5);
+    UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:edge cornerRadius:edge.size.height / 2];
+    // The mask's alpha is the glow's ceiling: 0.18 × a 0.38 layer was invisible on device.
+    CGContextSetShadowWithColor(ctx, CGSizeZero, 7, [UIColor colorWithWhite:1 alpha:0.75].CGColor);
+    CGContextSetStrokeColorWithColor(ctx, [UIColor colorWithWhite:1 alpha:0.6].CGColor);
+    CGContextSetLineWidth(ctx, 2.75);
+    CGContextAddPath(ctx, path.CGPath);
+    CGContextStrokePath(ctx);
+    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return image;
+}
+
 @implementation SGRPlayCapsule {
     UIImageView *_glyph;
     UILabel *_title;
     __weak UIImageView *_watchedGlyph;
+    UIView *_glowHost;
+    CALayer *_spin;
+    CAGradientLayer *_glow;
+    CALayer *_glowMask;
+    NSString *_seed;
+    UIImage *_glowImage;
+    NSArray<UIColor *> *_glowColors;
+    NSString *_glowWhy;
+    NSUInteger _glowGeneration;
+    CGFloat _maskW, _maskH;
+    BOOL _mixGlow;
+}
+
+- (void)setMixGlow:(BOOL)on seed:(NSString *)seed image:(UIImage *)image {
+    BOOL seedChanged = seed.length && ![seed isEqualToString:_seed];
+    BOOL imageChanged = image && image != _glowImage;
+    BOOL onChanged = on != _mixGlow;
+    if (seedChanged) _seed = [seed copy];
+    if (imageChanged) _glowImage = image;
+    _mixGlow = on;
+    if (onChanged || seedChanged || imageChanged) [self sgr_resolveGlowColors];
+    [self sgr_updateGlow];
+    [self setNeedsLayout];
+}
+
+- (BOOL)mixGlow {
+    return _mixGlow;
+}
+
+- (void)sgr_applyGlowColors:(NSArray<UIColor *> *)colors why:(NSString *)why {
+    if (!colors.count) return;
+    _glowColors = colors;
+    _glowWhy = why;
+    NSMutableArray *cg = [NSMutableArray arrayWithCapacity:colors.count + 1];
+    for (UIColor *color in colors) [cg addObject:(id)color.CGColor];
+    [cg addObject:(id)colors.firstObject.CGColor];
+    _glow.colors = cg;
+    SGLog(@"redesign playlist: play glow colours from %@ (%lu)", why, (unsigned long)colors.count);
+}
+
+- (void)sgr_resolveGlowColors {
+    if (!_mixGlow) return;
+    NSArray<UIColor *> *fallback = sgr_defaultGlow(sgr_seedTurn(_seed));
+    NSString *why = _seed.length ? @"playlist id" : @"default";
+    [self sgr_applyGlowColors:fallback why:why];
+    UIImage *image = _glowImage;
+    if (!image) return;
+    NSUInteger generation = ++_glowGeneration;
+    __weak SGRPlayCapsule *weakSelf = self;
+    sgr_colorsFromCover(image, ^(NSArray<UIColor *> *colors) {
+        SGRPlayCapsule *capsule = weakSelf;
+        if (!capsule || generation != capsule->_glowGeneration || !colors.count) return;
+        [capsule sgr_applyGlowColors:colors why:@"cover"];
+    });
+}
+
+// The halo is a conic gradient spinning under a soft ring mask. The mask does not spin, so the
+// capsule's shape stays put. No display link: both motions are CABasicAnimation.
+- (void)sgr_updateGlow {
+    BOOL reduce = UIAccessibilityIsReduceMotionEnabled();
+    BOOL empty = self.bounds.size.width < 8 || self.bounds.size.height < 8;
+    BOOL onScreen = NO;
+    if (_mixGlow && self.window && !self.hidden && self.alpha > 0.01 && !empty) {
+        CGRect shown = [self convertRect:self.bounds toView:self.window];
+        onScreen = CGRectIntersectsRect(self.window.bounds, CGRectInset(shown, -8, -8));
+    }
+    NSString *why = !_mixGlow ? @"off" : !self.window ? @"no window" : empty ? @"empty bounds" : !onScreen ? @"off screen" : reduce ? @"reduce motion" : @"on";
+    static NSString *lastWhy;
+    BOOL report = [why isEqualToString:@"on"] || [why isEqualToString:@"reduce motion"] || [why isEqualToString:@"off"];
+    if (report && ![why isEqualToString:lastWhy]) {
+        lastWhy = why;
+        if (![why isEqualToString:@"off"])
+            SGLog(@"redesign playlist: play glow applied (%@)", why);
+    }
+    if (!_mixGlow || empty) {
+        [_spin removeAllAnimations];
+        [_glowHost removeFromSuperview];
+        _glowHost = nil;
+        _spin = nil;
+        _glow = nil;
+        _glowMask = nil;
+        self.clipsToBounds = NO;
+        return;
+    }
+    self.clipsToBounds = NO;
+    if (!_glowHost) {
+        _glowHost = [UIView new];
+        _glowHost.userInteractionEnabled = NO;
+        _glowHost.backgroundColor = UIColor.clearColor;
+        _glowHost.accessibilityElementsHidden = YES;
+        [self insertSubview:_glowHost atIndex:0];
+        _spin = [CALayer layer];
+        _glow = [CAGradientLayer layer];
+        _glow.type = kCAGradientLayerConic;
+        _glow.startPoint = CGPointMake(0.5, 0.5);
+        _glow.endPoint = CGPointMake(0.5, 0);
+        [_spin addSublayer:_glow];
+        [_glowHost.layer addSublayer:_spin];
+        _glowMask = [CALayer layer];
+        _glowHost.layer.mask = _glowMask;
+        if (!_glowColors) [self sgr_resolveGlowColors];
+        else [self sgr_applyGlowColors:_glowColors why:_glowWhy ?: @"default"];
+    }
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    _glowHost.frame = CGRectInset(self.bounds, -kGlowSpread, -kGlowSpread);
+    _glowHost.hidden = !onScreen;
+    CGFloat side = hypot(_glowHost.bounds.size.width, _glowHost.bounds.size.height);
+    _spin.bounds = CGRectMake(0, 0, side, side);
+    _spin.position = CGPointMake(CGRectGetMidX(_glowHost.bounds), CGRectGetMidY(_glowHost.bounds));
+    _glow.frame = _spin.bounds;
+    _glowMask.frame = _glowHost.bounds;
+    if (fabs(_maskW - self.bounds.size.width) > 0.5 || fabs(_maskH - self.bounds.size.height) > 0.5) {
+        _maskW = self.bounds.size.width;
+        _maskH = self.bounds.size.height;
+        UIImage *ring = sgr_glowRing(self.bounds.size, kGlowSpread);
+        _glowMask.contents = (__bridge id)ring.CGImage;
+        _glowMask.contentsScale = ring.scale;
+    }
+    [CATransaction commit];
+    if (!onScreen) {
+        [_spin removeAnimationForKey:@"spin"];
+        [_spin removeAnimationForKey:@"breathe"];
+        return;
+    }
+    if (reduce) {
+        [_spin removeAnimationForKey:@"spin"];
+        [_spin removeAnimationForKey:@"breathe"];
+        _spin.opacity = 0.7;
+        return;
+    }
+    if (![_spin animationForKey:@"spin"]) {
+        CABasicAnimation *spin = [CABasicAnimation animationWithKeyPath:@"transform.rotation.z"];
+        spin.fromValue = @0;
+        spin.toValue = @(6.283185307179586);
+        spin.duration = 9;
+        spin.repeatCount = HUGE_VALF;
+        spin.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionLinear];
+        [_spin addAnimation:spin forKey:@"spin"];
+    }
+    if (![_spin animationForKey:@"breathe"]) {
+        CABasicAnimation *breathe = [CABasicAnimation animationWithKeyPath:@"opacity"];
+        breathe.fromValue = @0.5;
+        breathe.toValue = @0.88;
+        breathe.duration = 3;
+        breathe.autoreverses = YES;
+        breathe.repeatCount = HUGE_VALF;
+        breathe.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        [_spin addAnimation:breathe forKey:@"breathe"];
+    }
+}
+
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    [self sgr_updateGlow];
+}
+
+- (void)dealloc {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -68,6 +336,8 @@ static NSString *wordIn(UIView *button) {
     [self addTarget:self action:@selector(sgr_down) forControlEvents:UIControlEventTouchDown];
     [self addTarget:self action:@selector(sgr_up) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
     [self addTarget:self action:@selector(sgr_tap) forControlEvents:UIControlEventTouchUpInside];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(sgr_updateGlow)
+                                               name:UIAccessibilityReduceMotionStatusDidChangeNotification object:nil];
     return self;
 }
 
@@ -98,6 +368,7 @@ static NSString *wordIn(UIView *button) {
     CGSize text = _title.bounds.size;
     _title.frame = CGRectMake(CGRectGetMaxX(_glyph.frame), round((bounds.size.height - text.height) / 2),
                               MAX(0, bounds.size.width - kCapsuleTrail - CGRectGetMaxX(_glyph.frame)), text.height);
+    if (_mixGlow) [self sgr_updateGlow];
 }
 
 - (void)feedFrom:(UIView *)source {
@@ -393,6 +664,12 @@ static BOOL indicatorOn(UIView *button, BOOL *found) {
 }
 
 - (void)sgr_tap {
+    SGRDownloadState download = SGRDownloadNone;
+    CGFloat progress = -1;
+    if (self.source && SGRReadDownload(self.source, &download, &progress) && download == SGRDownloadDownloaded) {
+        SGLog(@"redesign kit: download tap ignored, already downloaded (%@)", self.source.accessibilityIdentifier);
+        return;
+    }
     SGRActivate(self.source);
     // The word is watched where Spotify writes it, but a button that rebuilds its content on the state it
     // just took writes the new word into a label the watch has never seen. So a tap, and only a tap, asks

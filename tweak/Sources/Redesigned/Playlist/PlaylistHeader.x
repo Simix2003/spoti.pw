@@ -42,7 +42,7 @@ static const CGFloat kMinHero = 120, kMinCover = 80;
 
 static char kCoverKey, kMetaKey, kPlayKey, kLayoutKey, kToolbarKey, kScrimKey, kBarScrimKey;
 static char kShuffleKey, kAddKey, kDownloadKey, kInfoKey, kBlockHeightKey, kBlockWatchedKey;
-static char kHeroKey, kHeroHeightKey, kRestPlaneKey, kRowKey, kRowWatchedKey, kMoreKey, kCreatorKey, kPinnedMoreKey, kSortKey;
+static char kHeroKey, kHeroHeightKey, kRestPlaneKey, kRowKey, kRowWatchedKey, kMoreKey, kCreatorKey, kPinnedMoreKey, kSortKey, kGlowCoverKey, kGlowInfoKey, kGlowRetryKey;
 
 #pragma mark - finding things
 
@@ -51,6 +51,26 @@ static char kHeroKey, kHeroHeightKey, kRestPlaneKey, kRowKey, kRowWatchedKey, kM
 @end
 @implementation SGRWeakView
 @end
+
+void SGRPlaylistRefreshPlayGlow(UIView *page) {
+    if (!page) return;
+    SGRWeakView *box = objc_getAssociatedObject(page, &kGlowInfoKey);
+    SGRHeaderInfo *info = (SGRHeaderInfo *)box.view;
+    if (![info isKindOfClass:SGRHeaderInfo.class]) {
+        SGLog(@"redesign playlist: play glow skipped, header not up yet");
+        return;
+    }
+    BOOL seen = SGRPlaylistCurationSeen(page);
+    BOOL mixed = seen && SGRPlaylistIsMixed(page);
+    UIImage *cover = objc_getAssociatedObject(page, &kGlowCoverKey);
+    [info setPlayGlow:mixed seed:nil image:cover];
+    NSString *why = !seen ? @"curation row not seen" : mixed ? (cover ? @"mixed, cover" : @"mixed, no cover yet") : @"no mix pill";
+    static NSString *last;
+    NSString *mark = [NSString stringWithFormat:@"%p %@", page, why];
+    if ([mark isEqualToString:last]) return;
+    last = mark;
+    SGLog(@"redesign playlist: play glow %@ (%@)", mixed ? @"applied" : @"skipped", why);
+}
 
 // The page the header is on: FTPViewController's own view, which holds the field, the list and the header
 // and does not scroll. Walked from the header rather than taken off sgr_playlistRoot, so a playlist under
@@ -176,8 +196,13 @@ static UIView *firstOfClass(UIView *root, Class wanted) {
 
     self.coverPixels = image.size.width;
     _picture.image = image;
-    // The page's field takes its colour from the same picture.
+    // The page's field takes its colour from the same picture. The Play halo reads the same cover.
+    UIView *page = SGRPlaylistPageOf(self);
+    if (page) objc_setAssociatedObject(page, &kGlowCoverKey, image, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     SGRPlaylistSetArtwork(self, image);
+    UIViewController *headerVC = SGRPlaylistHeaderOf(self);
+    SGRHeaderInfo *info = headerVC ? objc_getAssociatedObject(headerVC.viewIfLoaded, &kInfoKey) : nil;
+    if (info && page && SGRPlaylistIsMixed(page)) [info setPlayGlow:YES seed:nil image:image];
     SGRRevealMark(SGRPlaylistPageOf(self), SGRRevealPicture);
     static BOOL logged;
     if (late && !logged) {
@@ -341,6 +366,41 @@ static void showPlaylist(SGRHeaderInfo *info, UIView *block, UIView *root, id mo
     // More, pinned over the page rather than left in the block, which is concealed and scrolls away; and
     // Spotify's own Sort, from the find-on-page toolbar this header conceals, for the ⋯ sheet to fire.
     UIView *page = SGRPlaylistPageOf(root);
+    BOOL seen = SGRPlaylistCurationSeen(page);
+    BOOL mixed = seen && SGRPlaylistIsMixed(page);
+    NSString *seed = modelString(model, @"playlistURI") ?: modelString(model, @"URI") ?: modelString(model, @"uri") ?: title;
+    UIImage *cover = page ? objc_getAssociatedObject(page, &kGlowCoverKey) : nil;
+    [info setPlayGlow:mixed seed:seed image:cover];
+    if (page) {
+        SGRWeakView *box = objc_getAssociatedObject(page, &kGlowInfoKey);
+        if (!box) {
+            box = [SGRWeakView new];
+            objc_setAssociatedObject(page, &kGlowInfoKey, box, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        box.view = info;
+    }
+    static NSString *glowDecision;
+    NSString *why = !play ? @"play button missing" : !seen ? @"curation row not seen" : mixed ? (cover ? @"mixed, cover" : @"mixed, no cover yet") : @"no mix pill";
+    NSString *decision = [NSString stringWithFormat:@"%@ %@", play ? @"capsule" : @"no-capsule", why];
+    if (![decision isEqualToString:glowDecision]) {
+        glowDecision = decision;
+        SGLog(@"redesign playlist: play glow %@ (%@)", mixed && play ? @"applied" : @"skipped", why);
+    }
+    if (page && !seen && !objc_getAssociatedObject(page, &kGlowRetryKey)) {
+        objc_setAssociatedObject(page, &kGlowRetryKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        __weak UIView *weakPage = page;
+        for (NSUInteger attempt = 1; attempt <= 4; attempt++) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((0.25 * attempt) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                UIView *later = weakPage;
+                if (!later) return;
+                if (!SGRPlaylistCurationSeen(later)) {
+                    SGLog(@"redesign playlist: play glow skipped, curation row not seen (retry %lu)", (unsigned long)attempt);
+                    return;
+                }
+                SGRPlaylistRefreshPlayGlow(later);
+            });
+        }
+    }
     SGRPinnedMore(page, &kPinnedMoreKey, SGRFindByIdentifier(block, @"Components.UI.ContextMenuButton*", &kMoreKey));
     SGRPlaylistTakeSort(page, SGRFindByIdentifier(root, @"Components.Header.UI.Toolbar.Button", &kSortKey));
     // The name and Play are what the header waits for; the row's other buttons fade in on their own when late.
@@ -387,6 +447,8 @@ static SGRHeaderInfo *applyInfo(UIView *block, UIView *headerRoot, UIViewControl
         [block addSubview:info];
     }
     else if (block.subviews.lastObject != info) [block bringSubviewToFront:info];
+    // Play's mix halo reaches a few points past the capsule; Spotify's block often clips.
+    if (block.clipsToBounds) block.clipsToBounds = NO;
     for (UIView *sub in block.subviews) {
         if (sub != info) conceal(sub);
     }

@@ -14,6 +14,7 @@
 #import "Core/SGCore.h"
 #import "Redesigned/Kit/SGRRepaint.h"
 #import "Redesigned/Navbar/Navbar.h"
+#import "Shared/Player/PlayerEvents.h"
 #import "NowPlayingBar.h"
 
 static const CGFloat kCardRadius = 24;
@@ -25,7 +26,9 @@ static __weak UIView *sg_barContainer;
 BOOL SGRInlinePlayer(void) {
     static BOOL on;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ on = SGRedesignedUI() && SGHidden(SGRKeyInlinePlayer); });
+    // On by default in the redesign: the Music-style split bar + mini player accessory.
+    // An explicit off still sticks (SGEnabled: unset is on).
+    dispatch_once(&once, ^{ on = SGRedesignedUI() && SGEnabled(SGRKeyInlinePlayer); });
     return on;
 }
 
@@ -66,33 +69,122 @@ UIImage *SGRNowPlayingArtworkImage(void) {
     return SGRNowPlayingArtworkView().image;
 }
 
-// The recognizer nearest the top of the bar opens the player; deeper ones belong to its buttons and the
-// device line. Breadth first from the bar's container, then up its superviews to Spotify's page.
-BOOL SGROpenPlayerFromBar(void) {
-    UIView *container = sg_barContainer;
+// Spotify's bar opens the player from a tap recognizer on the card. The card is the wide view
+// (trees/home.txt: the bar is 386pt, its buttons are not). A narrower recognizer is a control: firing
+// it used to count as success and the player never presented. Recognizers above the bar are not the
+// card either, so the walk stays inside the bar's container.
+static const CGFloat kOpenTapWidth = 120;
+static const CGFloat kOpenTapFraction = 0.75;
+
+static BOOL hasOpenTap(UIView *view) {
+    for (UIGestureRecognizer *recognizer in view.gestureRecognizers) {
+        if ([recognizer isKindOfClass:UITapGestureRecognizer.class] && recognizer.enabled) return YES;
+    }
+    return NO;
+}
+
+static BOOL wideEnough(UIView *view, CGFloat barWidth) {
+    CGFloat width = view.bounds.size.width;
+    if (barWidth >= 100) return width >= barWidth * kOpenTapFraction;
+    return width >= kOpenTapWidth;
+}
+
+// Fires only the widest card-sized tap. YES when a recognizer was invoked, which is not the same as
+// the player being on screen: the caller checks that and tries again.
+static BOOL fireOpen(UIView *container) {
     if (!container) return NO;
+    CGFloat barWidth = container.bounds.size.width;
+    UIView *best = nil;
+    CGFloat bestWidth = 0;
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:container];
     while (queue.count) {
         UIView *view = queue.firstObject;
         [queue removeObjectAtIndex:0];
-        if (SGRFireTapRecognizers(view)) {
-            SGLog(@"mini player: tap passed to %@ on Spotify's bar", NSStringFromClass(view.class));
-            return YES;
-        }
         [queue addObjectsFromArray:view.subviews];
+        if (!wideEnough(view, barWidth) || !hasOpenTap(view)) continue;
+        CGFloat width = view.bounds.size.width;
+        if (width <= bestWidth) continue;
+        bestWidth = width;
+        best = view;
     }
-    for (UIView *view = container.superview; view && ![view isKindOfClass:UIWindow.class]; view = view.superview) {
-        if (SGRFireTapRecognizers(view)) {
-            SGLog(@"mini player: tap passed to %@ above Spotify's bar", NSStringFromClass(view.class));
-            return YES;
-        }
-    }
-    NSMutableString *out = [NSMutableString stringWithString:@"mini player: no tap recognizer on Spotify's bar"];
+    if (!best) return NO;
+    // The bar is left untouchable so it cannot sit over the mini player. Spotify's handler is invoked
+    // directly; interaction is put back for that call in case the handler checks it.
+    BOOL was = container.userInteractionEnabled;
+    BOOL bestWas = best.userInteractionEnabled;
+    container.userInteractionEnabled = YES;
+    best.userInteractionEnabled = YES;
+    BOOL fired = SGRFireTapRecognizers(best);
+    best.userInteractionEnabled = bestWas;
+    container.userInteractionEnabled = was;
+    return fired;
+}
+
+static void logMissingOpen(UIView *container) {
+    NSMutableString *out = [NSMutableString stringWithString:@"mini player: no card-sized tap recognizer on Spotify's bar"];
     SGForEachView(container, ^(UIView *v) {
-        for (UIGestureRecognizer *r in v.gestureRecognizers) [out appendFormat:@"\n  %@ on %@", r, NSStringFromClass(v.class)];
+        for (UIGestureRecognizer *r in v.gestureRecognizers) {
+            [out appendFormat:@"\n  %@ on %@ %.0fpt", r, NSStringFromClass(v.class), v.bounds.size.width];
+        }
     });
     SGLogLong(@"mini player", out);
-    return NO;
+}
+
+static NSUInteger sg_openToken;
+static CFTimeInterval sg_openBegan;
+static BOOL sg_pursuing;
+static const NSUInteger kOpenTries = 4;
+
+// Retries never postpone the first fire. A leftover close, or a present that never reached
+// viewDidAppear, used to sit in this function for up to a second (the stuck-transition watchdog)
+// before Spotify's tap ran, which is the open that feels late. A transition that began with this
+// tap is the present itself: firing again would toggle the player, so that one is given a moment.
+static void pursueOpen(NSUInteger token, NSUInteger fires) {
+    if (token != sg_openToken) return;
+    if (SGPlayerIsOnScreen()) {
+        sg_pursuing = NO;
+        SGLog(@"mini player: open succeeded");
+        return;
+    }
+    if (fires >= kOpenTries) {
+        sg_pursuing = NO;
+        SGLog(@"mini player: open gave up after %lu tries", (unsigned long)fires);
+        logMissingOpen(sg_barContainer);
+        return;
+    }
+    CFTimeInterval began = SGPlayerTransitionBegan();
+    BOOL fromThisTap = fires > 0 && began >= sg_openBegan - 0.02 && (SGPlayerIsAppearing() || SGPlayerTransitionEnds() > 0);
+    if (fromThisTap && CACurrentMediaTime() - began < 0.8) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            pursueOpen(token, fires);
+        });
+        return;
+    }
+    if (fromThisTap) {
+        SGLog(@"mini player: open retry, the transition did not put the player up");
+        SGPlayerTransitionResetStuck();
+    }
+    BOOL fired = fireOpen(sg_barContainer);
+    // A tap that ran is given time to present before another, which would toggle the player.
+    // A missing recognizer is tried again on the next layout, without waiting out the watchdog.
+    NSTimeInterval delay = fired ? 0.45 : 0.05;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        pursueOpen(token, fires + 1);
+    });
+}
+
+BOOL SGROpenPlayerFromBar(void) {
+    if (SGPlayerIsOnScreen()) return YES;
+    // A second tap while the present from this one is in flight would toggle the player shut.
+    // The window is the present, not the old one-second wait that also blocked the first fire.
+    if (sg_pursuing && CACurrentMediaTime() - sg_openBegan < 0.45
+        && SGPlayerTransitionBegan() >= sg_openBegan - 0.02
+        && (SGPlayerIsAppearing() || SGPlayerTransitionEnds() > 0)) return YES;
+    NSUInteger token = ++sg_openToken;
+    sg_openBegan = CACurrentMediaTime();
+    sg_pursuing = YES;
+    pursueOpen(token, 0);
+    return YES;
 }
 
 static UIView *detectColoredCard(UIView *bar) {

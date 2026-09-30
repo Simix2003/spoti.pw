@@ -3,6 +3,28 @@
 #import "About.h"
 #import "App/Onboarding/Onboarding.h"
 
+// Makefile passes these. A build that doesn't still compiles, and the row says unknown.
+#ifndef SG_BUILD
+#define SG_BUILD "unknown"
+#endif
+#ifndef SG_BUILD_BRANCH
+#define SG_BUILD_BRANCH "unknown"
+#endif
+
+// Branch and short commit, separate from SG_VERSION so a fork build is not identical to upstream beta.
+static NSString *SGBuildLabel(void) {
+    NSString *branch = @SG_BUILD_BRANCH;
+    NSString *build = @SG_BUILD;
+    if (!branch.length) branch = @"unknown";
+    if (!build.length) build = @"unknown";
+    if ([branch isEqualToString:@"unknown"] && [build isEqualToString:@"unknown"]) return @"unknown";
+    return [NSString stringWithFormat:@"%@ %@", branch, build];
+}
+
+__attribute__((constructor)) static void SGLogBuildIdentity(void) {
+    SGLog(@"build: %@", SGBuildLabel());
+}
+
 // Every key of the mod's is under one prefix, so a reset is a sweep of the defaults with the stock
 // marker of SGPrefs.h left behind; the hooks read them at launch, so it ends in a restart.
 static void resetAll(void) {
@@ -32,6 +54,35 @@ static SGModRow *withSymbol(SGModRow *row, NSString *symbol) {
     return row;
 }
 
+static NSString *logSizeLabel(void) {
+    uint64_t bytes = SGLogExportByteCount();
+    if (bytes < 1024) return [NSString stringWithFormat:@"%llu B", (unsigned long long)bytes];
+    if (bytes < 1024 * 1024) return [NSString stringWithFormat:@"%.1f KB", bytes / 1024.0];
+    return [NSString stringWithFormat:@"%.2f MB", bytes / (1024.0 * 1024.0)];
+}
+
+static void shareLogs(void) {
+    SGLogExportSnapshot(^(NSURL *url) {
+        UIViewController *top = SGTopController();
+        if (!url || !top) {
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"No logs yet" message:@"Use Spotify for a moment, then share the log file." preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+            [SGTopController() presentViewController:alert animated:YES completion:nil];
+            return;
+        }
+        UIActivityViewController *sheet = [[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];
+        sheet.popoverPresentationController.sourceView = top.view;
+        [top presentViewController:sheet animated:YES completion:nil];
+    });
+}
+
+static void confirmClearLogs(void) {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Clear logs?" message:@"The on-phone log file is deleted. Spotify keeps running." preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Clear logs" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) { SGLogExportClear(); }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [SGTopController() presentViewController:alert animated:YES completion:nil];
+}
+
 // Which build this is, whether GitHub has a newer release, and where to reach the mod: without these
 // rows a build that is already installed has no way of telling its user that anything moved on.
 UIViewController *SGAboutPage(void) {
@@ -44,7 +95,16 @@ UIViewController *SGAboutPage(void) {
     NSMutableArray<SGModSection *> *sections = [NSMutableArray arrayWithObject:SGSection(nil, @[
         updates,
         SGStatRow(@"Version", ^NSString *{ return @(SG_VERSION); }),
+        SGStatRow(@"Build", ^NSString *{ return SGBuildLabel(); }),
         SGStatRow(@"Spotify", ^NSString *{ return spotify; }),
+    ])];
+    SGModRow *logFile = SGStatRow(@"Log file", ^NSString *{ return logSizeLabel(); });
+    logFile.subtitle = [NSString stringWithFormat:@"Build %@", SGBuildLabel()];
+    logFile.refreshOn = SGLogExportDidChangeNotification;
+    [sections addObject:SGSection(@"Debug", @[
+        logFile,
+        withSymbol(SGActionRow(@"Share logs", @"AirDrop, Files, or Messages", ^{ shareLogs(); }), @"square.and.arrow.up"),
+        withSymbol(SGActionRow(@"Clear logs", nil, ^{ confirmClearLogs(); }), @"trash"),
     ])];
     SGModRow *appIcon = SGAppIconRow();
     if (appIcon) [sections addObject:SGSection(nil, @[withSymbol(appIcon, @"app")])];

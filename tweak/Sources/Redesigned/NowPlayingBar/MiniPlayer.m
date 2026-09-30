@@ -30,6 +30,7 @@ static __weak SGRMiniPlayer *sg_miniPlayer;
     UIImageView *_artwork;
     UILabel *_title, *_artist;
     UIButton *_play;
+    UITapGestureRecognizer *_openTap;
     __weak UIImageView *_source;   // the artwork on Spotify's bar, watched for its picture
     BOOL _swiping;
 }
@@ -67,10 +68,18 @@ static __weak SGRMiniPlayer *sg_miniPlayer;
     _play.userInteractionEnabled = NO;
     [self addSubview:_play];
 
+    // One tap covers the whole capsule, including the glass around the artwork. The pans wait until
+    // it fails, so a small movement is still a tap: a pan that begins first cancels the tap and the
+    // player never opens.
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapped:)];
+    tap.delegate = self;
+    tap.delaysTouchesBegan = NO;
+    tap.delaysTouchesEnded = NO;
     [self addGestureRecognizer:tap];
+    _openTap = tap;
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panned:)];
     pan.delegate = self;
+    [pan requireGestureRecognizerToFail:tap];
     [self addGestureRecognizer:pan];
 
     if (@available(iOS 26.0, *)) {
@@ -91,8 +100,11 @@ static __weak SGRMiniPlayer *sg_miniPlayer;
 
 - (void)environmentChanged {
     [self setNeedsLayout];
-    static NSUInteger logged;
-    if (logged++ < 60) SGLog(@"mini player: %@", [self isInline] ? @"inline (bar minimized)" : @"expanded");
+    static BOOL loggedInline = NO;
+    BOOL inlineNow = [self isInline];
+    if (loggedInline == inlineNow) return;
+    loggedInline = inlineNow;
+    SGLog(@"mini player: %@", inlineNow ? @"inline (bar minimized)" : @"expanded");
 }
 
 // Between the selected tab and Search the accessory is a short capsule, and only the title fits.
@@ -216,7 +228,16 @@ static __weak SGRMiniPlayer *sg_miniPlayer;
     SGLog(@"mini player: %@ -> %@", paused ? @"resume" : @"pause", result);
 }
 
+// Nothing drawn on the capsule takes the touch. A glass subview, a hairline or the artwork used to be
+// able to sit above the tap.
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    if (!self.userInteractionEnabled || self.hidden || self.alpha < 0.01) return nil;
+    if (![self pointInside:point withEvent:event]) return nil;
+    return self;
+}
+
 - (void)tapped:(UITapGestureRecognizer *)tap {
+    if (tap.state != UIGestureRecognizerStateEnded) return;
     // A tap near the button is the button's: it is a small target on a card that opens the player.
     CGPoint center = _play.center;
     CGFloat reach = _play.bounds.size.width / 2 + 6;
@@ -225,10 +246,23 @@ static __weak SGRMiniPlayer *sg_miniPlayer;
         [self togglePlay];
         return;
     }
-    if (!SGROpenPlayerFromBar()) SGLog(@"mini player: nothing on Spotify's bar took the tap");
+    SGROpenPlayerFromBar();
 }
 
-// Only a sideways drag is a swipe; anything else is left to the page and to UIKit's own gestures.
+// A pan anywhere on the capsule, including one UIKit added for the bar, waits until this tap fails.
+// The tap does not wait for the pan: that dependency is what used to swallow the open, and the
+// reverse would hold the tap until the pan gave up.
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)other {
+    if (recognizer != _openTap) return NO;
+    return [other isKindOfClass:UIPanGestureRecognizer.class];
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldRequireFailureOfGestureRecognizer:(UIGestureRecognizer *)other {
+    return NO;
+}
+
+// A sideways drag skips. Expanding and minimizing the bar is UIKit's: the top of the page, or a tap
+// on the minimized bar. A vertical drag on the capsule is left alone.
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)recognizer {
     if (![recognizer isKindOfClass:UIPanGestureRecognizer.class]) return YES;
     CGPoint velocity = [(UIPanGestureRecognizer *)recognizer velocityInView:self];

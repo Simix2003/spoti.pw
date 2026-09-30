@@ -84,6 +84,8 @@ static BOOL sameImages(NSArray<UIImage *> *a, NSArray<UIImage *> *b) {
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
+    // Play's mix halo draws a few points past the capsule; clipping here would eat it.
+    self.clipsToBounds = NO;
     _title = infoLabel(self, SGRFont(UIFontTextStyleTitle2, UIFontWeightBold, UIContentSizeCategoryExtraLarge),
                        SGRPrimary(), 2, NSTextAlignmentCenter);
     _title.accessibilityTraits = UIAccessibilityTraitHeader;
@@ -316,6 +318,10 @@ static BOOL sameImages(NSArray<UIImage *> *a, NSArray<UIImage *> *b) {
         }
     }
     if (changed) [self setNeedsLayout];
+}
+
+- (void)setPlayGlow:(BOOL)on seed:(NSString *)seed image:(UIImage *)image {
+    [_play setMixGlow:on seed:seed image:image];
 }
 
 - (void)trailingStateChanged {

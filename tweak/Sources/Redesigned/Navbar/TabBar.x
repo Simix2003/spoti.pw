@@ -1,8 +1,10 @@
-// Tab bar: Spotify's own bar stays where it is but goes invisible, and a system UITabBar sits on top
-// of it. On iOS 26+ with UIDesignRequiresCompatibility off, UIKit draws that bar as real Liquid Glass
-// (selection bubble, lensing, light/dark adaptation) with no glass API of ours. Spotify's bar keeps
-// its frame, so the page insets and the now playing bar stay where Spotify puts them; where the system
-// bar is taller than Spotify's, Spotify is made to leave it the room (see "room for the glass bar").
+// Tab bar: Spotify's own bar stays where it is but goes invisible, and a system bar sits on top of
+// it. On iOS 26 the redesign uses a UITabBarController so Search can be a UISearchTab: UIKit then
+// draws the regular tabs in a leading Liquid Glass platter and Search as its own trailing circle,
+// the way Music does. With the Apple Music style player on, that same controller also takes a
+// UITabAccessory mini player and minimizes on scroll. Spotify's bar keeps its frame, so the page
+// insets and the now playing bar stay where Spotify puts them; where the system bar is taller than
+// Spotify's, Spotify is made to leave it the room (see "room for the glass bar").
 //
 // A tab picked on the system bar is passed on as a tap on the hidden Spotify item it mirrors, and the
 // system bar's selection follows whichever Spotify label is painted white, or a tab of the mod's own
@@ -19,11 +21,16 @@
 #import "Shared/Player/PlayerState.h"
 #import "Redesigned/NowPlayingBar/NowPlayingBar.h"
 #import <objc/message.h>
+#import <objc/runtime.h>
 
 static char kBarKey, kHostKey;
 static __weak UIView *sg_stockBar;
 static CGFloat sg_room, sg_glassHeight;   // see "room for the glass bar"
-static BOOL sg_inline;                     // see "the tab bar with the mini player"
+// UITabBarController + UISearchTab: leading platter (Home, Library, …) and Search as its own
+// trailing circle, the way Music lays the bar out. Always on for the redesign on iOS 26.
+static BOOL sg_systemTabs;
+// Mini player as UITabAccessory with OnScrollDown minimize. Opt-in (SGRInlinePlayer).
+static BOOL sg_inline;
 
 @interface SGRSystemTabBar : UITabBar <UITabBarDelegate, UIGestureRecognizerDelegate>
 @property (nonatomic, weak) UIView *stockBar;
@@ -40,7 +47,10 @@ static void syncBar(UIView *stockBar);
 static NSArray<UIView *> *tabItems(UIView *tabBar) {
     NSMutableArray<UIView *> *items = [NSMutableArray array];
     for (UIView *item in SGRowIn(tabBar).arrangedSubviews) {
-        if (!item.hidden && item.bounds.size.width >= 20) [items addObject:item];
+        // The navbar list's mark, not hidden alone: Spotify's layout pass turns hidden back off
+        // and the glass bar would keep the tab it was told to drop.
+        if (!SGRNavbarShowsItem(item) || item.hidden || item.bounds.size.width < 20) continue;
+        [items addObject:item];
     }
     return [items sortedArrayUsingComparator:^NSComparisonResult(UIView *a, UIView *b) {
         return [@(SGFrameIn(a, tabBar).origin.x) compare:@(SGFrameIn(b, tabBar).origin.x)];
@@ -91,6 +101,7 @@ static BOOL hasInk(UIImage *image) {
 }
 
 static UIImage *renderLayer(CALayer *layer, CGSize size) {
+    if (size.width < 8 || size.height < 8) return nil;
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size];
     UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
         [layer renderInContext:context.CGContext];
@@ -112,6 +123,7 @@ static UIImage *glyphOf(UIView *item, BOOL active) {
     UIView *live = iconIn(item);
     if (!live) return nil;
     CGSize size = live.bounds.size;
+    if (size.width < 8 || size.height < 8) size = CGSizeMake(24, 24);
     id icon = encoreIconOf(live);
     Class viewClass = NSClassFromString(@"SPTEncoreIconView");
     if (icon && viewClass) {
@@ -121,19 +133,74 @@ static UIImage *glyphOf(UIView *item, BOOL active) {
         UIImage *cached = [cache objectForKey:key];
         if (cached) return cached;
         SPTEncoreIconView *view = [[viewClass alloc] initWithIcon:icon];
+        view.alpha = 1;
+        view.hidden = NO;
         view.frame = (CGRect){CGPointZero, size};
         [view setForegroundColor:UIColor.whiteColor];
         if ([view respondsToSelector:@selector(setActiveForegroundColor:)]) [view setActiveForegroundColor:UIColor.whiteColor];
         if ([view respondsToSelector:@selector(setIsActive:)]) [view setIsActive:active];
         [view layoutIfNeeded];
+        view.layer.opacity = 1;
         UIImage *image = renderLayer(view.layer, size);
+        // An outline that draws nothing while inactive still has a filled state. A nil image is
+        // what makes UIKit draw the title's first letter and collapse the image view to 1x1.
+        if (!image && active == NO) {
+            if ([view respondsToSelector:@selector(setIsActive:)]) [view setIsActive:YES];
+            [view layoutIfNeeded];
+            image = renderLayer(view.layer, size);
+        }
         if (image) {
             [cache setObject:image forKey:key];
             return image;
         }
     }
     // Tabs of the mod's own draw a UIImageView, or an icon Encore would not draw off screen.
-    return size.width >= 2 ? renderLayer(live.layer, size) : nil;
+    // The live view can sit in a row whose alpha is 0; its own layer still has the pixels.
+    float opacity = live.layer.opacity;
+    live.layer.opacity = 1;
+    UIImage *image = renderLayer(live.layer, size);
+    live.layer.opacity = opacity;
+    if (!image) {
+        static NSUInteger misses;
+        if (misses++ < 8) SGLog(@"tab bar: no glyph for %@", labelIn(item).text ?: @"?");
+    }
+    return image;
+}
+
+// The search circle keeps the accent on its icon after another tab is selected when the image is a
+// template: UIKit tints that button with the bar's tint and does not put it back. The idle icon is
+// drawn in Spotify's own idle grey, the selected one in the accent, both as original images.
+static UIImage *searchTabImage(UIView *item, BOOL active) {
+    UIImage *base = glyphOf(item, active);
+    if (!base) return nil;
+    UIColor *ink = active ? SGRAccent() : [UIColor colorWithWhite:0xB3 / 255.0 alpha:1];
+    static UIImage *onImage, *offImage, *onBase, *offBase;
+    static UIColor *onInk;
+    if (active) {
+        if (onImage && onBase == base && [onInk isEqual:ink]) return onImage;
+        onBase = base;
+        onInk = ink;
+        onImage = [base imageWithTintColor:ink renderingMode:UIImageRenderingModeAlwaysOriginal];
+        return onImage;
+    }
+    if (offImage && offBase == base) return offImage;
+    offBase = base;
+    offImage = [base imageWithTintColor:ink renderingMode:UIImageRenderingModeAlwaysOriginal];
+    return offImage;
+}
+
+static BOOL isSearchItem(UIView *item) {
+    if (!item) return NO;
+    // Spotify's own id (trees/home: TabBar.Item.Search) is the surest mark.
+    NSString *ident = item.accessibilityIdentifier;
+    if ([ident isEqualToString:@"TabBar.Item.Search"] || [ident hasSuffix:@".Search"]) return YES;
+    id icon = encoreIconOf(iconIn(item));
+    NSString *name = [icon respondsToSelector:@selector(name)] ? [icon name] : nil;
+    if (name.length && [name rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    // Localized titles still name the tab; a custom tab whose title happens to be Search is rare.
+    NSString *title = labelIn(item).text;
+    if (title.length && [title rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    return NO;
 }
 
 #pragma mark - passing a tap on
@@ -153,7 +220,6 @@ BOOL SGRFireTapRecognizers(UIView *view) {
             id target = object_getIvar(pair, targetIvar);
             SEL action = *(SEL *)((char *)(__bridge void *)pair + ivar_getOffset(actionIvar));
             if (!target || !action || ![target respondsToSelector:action]) continue;
-            SGLog(@"tab bar: tap -> %@ %@", NSStringFromClass([target class]), NSStringFromSelector(action));
             ((void (*)(id, SEL, id))objc_msgSend)(target, action, recognizer);
             fired = YES;
         }
@@ -161,24 +227,27 @@ BOOL SGRFireTapRecognizers(UIView *view) {
     return fired;
 }
 
-static void forwardTap(UIView *item) {
+static BOOL forwardTap(UIView *item) {
+    if (!item) return NO;
+    // Spotify's bar is left invisible and untouchable under the glass one. Its handler is invoked
+    // directly; interaction is put back for that call in case the handler checks it and drops the tap.
+    BOOL was = item.userInteractionEnabled;
+    CGFloat alpha = item.alpha;
+    item.userInteractionEnabled = YES;
+    if (item.alpha < 0.01) item.alpha = 0.02;
     __block BOOL sent = NO;
     SGForEachView(item, ^(UIView *v) {
         if (!sent) sent = SGRFireTapRecognizers(v);
     });
     SGForEachView(item, ^(UIView *v) {
         if (sent || ![v isKindOfClass:UIControl.class]) return;
-        SGLog(@"tab bar: tap -> control %@", NSStringFromClass(v.class));
         [(UIControl *)v sendActionsForControlEvents:UIControlEventTouchUpInside];
         sent = YES;
     });
-    if (!sent) {
-        NSMutableString *out = [NSMutableString stringWithFormat:@"tab bar: nothing to tap in %@", NSStringFromClass(item.class)];
-        SGForEachView(item, ^(UIView *v) {
-            for (UIGestureRecognizer *r in v.gestureRecognizers) [out appendFormat:@"\n  %@ on %@", r, NSStringFromClass(v.class)];
-        });
-        SGLogLong(@"navbar", out);
-    }
+    item.userInteractionEnabled = was;
+    item.alpha = alpha;
+    if (!sent) SGLog(@"tab bar: nothing to tap in %@", NSStringFromClass(item.class));
+    return sent;
 }
 
 static UITabBarItem *itemAtPoint(UITabBar *bar, CGPoint point) {
@@ -207,9 +276,23 @@ static UITabBarItem *itemAtPoint(UITabBar *bar, CGPoint point) {
 - (void)tabBar:(UITabBar *)tabBar didSelectItem:(UITabBarItem *)item {
     NSUInteger index = [self.items indexOfObject:item];
     if (index == NSNotFound || index >= self.sources.count) return;
-    SGRTabPicked(self.sources[index]);
+    UIView *source = self.sources[index];
+    BOOL search = isSearchItem(source);
+    BOOL already = isActive(source);
+    if (search) {
+        id icon = encoreIconOf(iconIn(source));
+        NSString *iconName = [icon respondsToSelector:@selector(name)] ? [icon name] : @"";
+        SGLog(@"search tab: tap received title %@ icon %@ already %d", labelIn(source).text ?: @"", iconName, already);
+    }
+    SGRTabPicked(source);
     // Home tapped while on Home pops Spotify's stack, which would take Mod Settings straight off it.
-    if (!self.holding) forwardTap(self.sources[index]);
+    BOOL sent = NO;
+    if (!self.holding) sent = forwardTap(source);
+    if (search) SGLog(@"search tab: tab selected, Spotify tap %@", sent ? @"fired" : @"not fired");
+    // Coming from another tab, Spotify's tap only opens the page. Already on Search, the same tap
+    // can miss the field, so both ask for it.
+    if (search && !self.holding) SGRFocusSearchPage();
+    else if (!search) SGRCancelSearchFocus();
     // Spotify repaints its labels a moment later; a tap it did not take snaps the selection back.
     UIView *stockBar = self.stockBar;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -321,15 +404,6 @@ static void holdHome(UIView *stockBar) {
     [home addGestureRecognizer:[[SGRHomeHold alloc] initWithTarget:SGRHomeHold.class action:@selector(held:)]];
 }
 
-static void logBarOnce(UITabBar *bar) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            SGLogLong(@"navbar", [NSString stringWithFormat:@"system tab bar %@\n%@", NSStringFromCGRect(bar.superview.frame), [bar recursiveDescription]]);
-        });
-    });
-}
-
 #pragma mark - room for the glass bar
 
 // UIKit's glass bar asks for 83 pt, the platter the top 62 of it, over no more safe area than a Face ID
@@ -372,7 +446,7 @@ static void makeRoom(UIViewController *container) {
     CGFloat height = glassHeight(bar, stockBar);
     // Spotify's regular width bar is a fixed 76 pt that ignores the inset.
     BOOL compact = container.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassCompact;
-    CGFloat room = compact && !sg_inline ? MAX(0, ceil(height - kStockRow - inset)) : 0;
+    CGFloat room = compact && !sg_systemTabs ? MAX(0, ceil(height - kStockRow - inset)) : 0;
     if (fabs(extra.bottom - room) < 0.5) return;
     sg_room = extra.bottom = room;
     container.additionalSafeAreaInsets = extra;
@@ -383,7 +457,9 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0));
 
 static void syncBar(UIView *stockBar) {
     sg_stockBar = stockBar;
-    if (sg_inline) {
+    // Split bar (leading tabs + trailing Search circle) needs UITabBarController + UISearchTab.
+    // A plain UITabBar draws every tab in one platter.
+    if (sg_systemTabs) {
         if (@available(iOS 26.0, *)) syncInline(stockBar);
         return;
     }
@@ -428,16 +504,6 @@ static void syncBar(UIView *stockBar) {
         for (UIView *source in sources) [items addObject:[[UITabBarItem alloc] initWithTitle:hideLabels ? nil : labelIn(source).text image:nil tag:items.count]];
         bar.sources = sources;
         [bar setItems:items animated:NO];
-        NSMutableString *out = [NSMutableString stringWithString:@"tab bar icons"];
-        for (UIView *source in sources) {
-            UIView *live = iconIn(source);
-            id icon = live ? encoreIconOf(live) : nil;
-            id variant = [icon respondsToSelector:NSSelectorFromString(@"active")] ? ((id (*)(id, SEL))objc_msgSend)(icon, NSSelectorFromString(@"active")) : nil;
-            [out appendFormat:@"\n  %@: %@ icon %@ active-variant %@ live-isActive %d label-white %d", labelIn(source).text, NSStringFromClass(live.class),
-                 [icon respondsToSelector:@selector(name)] ? [icon name] : icon, [variant respondsToSelector:@selector(name)] ? [variant name] : variant,
-                 [live respondsToSelector:@selector(isActive)] ? [(SPTEncoreIconView *)live isActive] : -1, isActive(source)];
-        }
-        SGLogLong(@"navbar", out);
     }
 
     UITabBarItem *selected = nil;
@@ -454,6 +520,13 @@ static void syncBar(UIView *stockBar) {
         if (!selected && (modTab != NSNotFound ? i == modTab : isActive(sources[i]))) selected = item;
     }
     if (selected && bar.selectedItem != selected) bar.selectedItem = selected;
+    if (selected) {
+        NSUInteger index = [bar.items indexOfObject:selected];
+        if (index < sources.count && isSearchItem(sources[index])) {
+            UIView *page = containerOf(stockBar).view;
+            if (page) SGRRaiseSearchChrome(page);
+        }
+    }
     // An icon view Spotify has not built yet is looked for again shortly, not on the next touch.
     static NSUInteger retries;
     if (missing && retries++ < 40) {
@@ -467,19 +540,21 @@ static void syncBar(UIView *stockBar) {
     CGFloat height = MAX(bounds.size.height, glassHeight(bar, stockBar));
     CGRect frame = CGRectMake(0, CGRectGetMaxY(bounds) - height, width, height);
     if (!CGRectEqualToRect(host.frame, frame)) host.frame = frame;
-    if (!CGRectEqualToRect(bar.frame, host.bounds)) bar.frame = host.bounds;
+    CGRect barFrame = CGRectMake(0, 0, width, host.bounds.size.height);
+    if (!CGRectEqualToRect(bar.frame, barFrame)) bar.frame = barFrame;
     if (host.superview != stockBar) [stockBar addSubview:host];
     else if (stockBar.subviews.lastObject != host) [stockBar bringSubviewToFront:host];
-    logBarOnce(bar);
     makeRoom(containerOf(stockBar));
 }
 
-#pragma mark - the tab bar with the mini player
+#pragma mark - the split tab bar (and the mini player)
 
-// With the mini player on (SGRKeyInlinePlayer), the glass bar is a UITabBarController's instead, since
-// the bottom accessory and minimizing on scroll are the controller's: UIKit then draws the mini player
-// above the bar and, scrolled, moves it in between the first tab and the last, all of it its own
-// morph. The controller's pages are empty and clear; Spotify's pages stay where they are, under it.
+// On iOS 26 the glass bar is a UITabBarController's: UISearchTab as the last tab puts Search in the
+// trailing circle and the rest in the leading platter. With the mini player on (SGRKeyInlinePlayer),
+// the same controller also takes a bottom accessory and minimizes on scroll: UIKit then draws the
+// mini player above the bar and, scrolled, moves it in between the first tab and Search, all of it
+// its own morph. The controller's pages are empty and clear; Spotify's pages stay where they are,
+// under it.
 //
 // Minimizing needs no private API: UIKit watches the scroll view the selected page names for its
 // bottom edge (-setContentScrollView:forEdge:), and the one named is the page of Spotify's in front,
@@ -501,6 +576,9 @@ static void syncBar(UIView *stockBar) {
 
 @interface SGRInlineTabs : UITabBarController <UITabBarControllerDelegate, UIGestureRecognizerDelegate, SGPlayerStateObserver>
 @property (nonatomic, weak) UIView *stockBar;
+// Spotify's row, in its own order. `sources` is the same tabs with Search moved last so it lines
+// up with `tabs` (UISearchTab is the trailing circle only when it is the last tab).
+@property (nonatomic, copy) NSArray<UIView *> *stockOrder;
 @property (nonatomic, copy) NSArray<UIView *> *sources;
 @property (nonatomic, strong) UITabAccessory *accessory API_AVAILABLE(ios(26.0));
 @property (nonatomic) BOOL holding;
@@ -518,16 +596,31 @@ static __weak UIScrollView *sg_pageScroll;
 // page is selected, not when a page names another one later (simulator: toggling the behaviour or an
 // appearance pass on the page do not do it), so the selection goes to another tab and back, unseen.
 static BOOL sg_flipping;
+// A finger is down on the followed list. Reselecting a tab in the middle of that cancels the drag,
+// which is the swipe that was supposed to move the capsule.
+static BOOL sg_dragActive;
 static void searchPageScroll(void);
 
 static void nameScrollView(void) {
+    if (!sg_inline) return;
     SGRInlineTabs *tabs = sg_inlineTabs;
     UIViewController *page = tabs.selectedViewController;
     UIScrollView *scroll = sg_pageScroll;
     if (!page || !scroll.window) return;
-    if ([page contentScrollViewForEdge:NSDirectionalRectEdgeBottom] == scroll) return;
-    [page setContentScrollView:scroll forEdge:NSDirectionalRectEdgeAll];
+    UIScrollView *named = [page contentScrollViewForEdge:NSDirectionalRectEdgeBottom];
+    if (named != scroll) {
+        [page setContentScrollView:scroll forEdge:NSDirectionalRectEdgeAll];
+        named = [page contentScrollViewForEdge:NSDirectionalRectEdgeBottom];
+    }
+    if (named == scroll) return;
+    // UIKit reads the scroll view when the page is selected, not when it is named. Flipping on every
+    // layout pass, including under a finger, cancelled the drag and the capsule never followed it.
+    if (sg_dragActive) return;
     if (sg_flipping || !tabs.viewIfLoaded.window) return;
+    static CFTimeInterval lastFlip;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - lastFlip < 1.5) return;
+    lastFlip = now;
     if (@available(iOS 26.0, *)) {
         UITab *selected = tabs.selectedTab;
         UITab *other = nil;
@@ -554,18 +647,76 @@ static void nameScrollView(void) {
     [super viewWillAppear:animated];
     nameScrollView();
 }
+// UIKit minimizes from this. The stand-in page has no list of its own; Spotify's page list is named
+// here so Home and Library both hand UIKit the same bottom-edge scroll view.
+- (UIScrollView *)contentScrollViewForEdge:(NSDirectionalRectEdge)edge {
+    UIScrollView *superScroll = [super contentScrollViewForEdge:edge];
+    if (edge & NSDirectionalRectEdgeBottom) {
+        UIScrollView *page = sg_pageScroll;
+        if (page.window) return page;
+    }
+    return superScroll;
+}
 @end
 
 @implementation SGRInlineHost
 // The bar's own view, anything in it and the accessory take a touch; the rest is Spotify's.
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *hit = [super hitTest:point withEvent:event];
-    UITabBar *bar = self.tabs.tabBar;
-    // Expanded, the accessory is not inside the bar and UIKit's views around it are not named for it.
+// The glass UIKit draws around the accessory can be a sibling of the content view, and a platter
+// there used to take the tap. A point on the capsule, or on the snug glass around it, goes to the
+// mini player.
+- (UIView *)miniPlayerHit:(CGPoint)point event:(UIEvent *)event {
     if (@available(iOS 26.0, *)) {
         UIView *mini = self.tabs.bottomAccessory.contentView;
-        if (mini && [hit isDescendantOfView:mini]) return hit;
+        if (!mini || mini.hidden || mini.alpha < 0.01 || !mini.userInteractionEnabled) return nil;
+        UIView *capsule = mini;
+        for (UIView *v = mini.superview; v && v != self; v = v.superview) {
+            // The glass rim around the capsule, not the row it sits in: a full-width ancestor would
+            // take the tabs beside the minimized capsule.
+            CGFloat dw = v.bounds.size.width - mini.bounds.size.width;
+            CGFloat dh = fabs(v.bounds.size.height - mini.bounds.size.height);
+            if (dh >= 28 || dw < -12 || dw > 40) break;
+            capsule = v;
+        }
+        CGPoint inCapsule = [capsule convertPoint:point fromView:self];
+        if (![capsule pointInside:inCapsule withEvent:event]) return nil;
+        CGPoint inMini = [mini convertPoint:point fromView:self];
+        return [mini hitTest:inMini withEvent:event] ?: mini;
     }
+    return nil;
+}
+
+// A tab button inside the bar, rather than the glass around the mini player. The rim used to be wide
+// enough to cover the trailing Search circle, so that tap never reached the tab.
+- (BOOL)hitIsTabControl:(UIView *)hit {
+    UITabBar *bar = self.tabs.tabBar;
+    UIView *mini = nil;
+    if (@available(iOS 26.0, *)) mini = self.tabs.bottomAccessory.contentView;
+    if (!hit || !bar || ![hit isDescendantOfView:bar]) return NO;
+    if (mini && (hit == mini || [hit isDescendantOfView:mini])) return NO;
+    for (UIView *v = hit; v && v != bar; v = v.superview) {
+        if (mini && v == mini) return NO;
+        if ([v isKindOfClass:UIControl.class]) return YES;
+        NSString *name = NSStringFromClass(v.class);
+        if ([name containsString:@"Button"] || [name containsString:@"TabBarItem"]) return YES;
+    }
+    return NO;
+}
+
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    UIView *miniHit = [self miniPlayerHit:point event:event];
+    if (miniHit && [self hitIsTabControl:hit]) {
+        UIView *mini = nil;
+        if (@available(iOS 26.0, *)) mini = self.tabs.bottomAccessory.contentView;
+        CGPoint inMini = mini ? [mini convertPoint:point fromView:self] : CGPointZero;
+        // The capsule itself still opens the player. Only the glass past its bounds yields to a tab.
+        if (!mini || ![mini pointInside:inMini withEvent:event]) {
+            return hit;
+        }
+    }
+    if (miniHit) return miniHit;
+    UITabBar *bar = self.tabs.tabBar;
+    // Expanded, the accessory is not inside the bar and UIKit's views around it are not named for it.
     for (UIView *v = hit; v && v != self; v = v.superview) {
         if (v == bar) return hit == bar ? nil : hit;
         if ([NSStringFromClass(v.class) containsString:@"Accessory"]) return hit;
@@ -582,9 +733,14 @@ static void nameScrollView(void) {
     self.delegate = self;
     self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     if (@available(iOS 26.0, *)) {
-        self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
-        self.accessory = [[UITabAccessory alloc] initWithContentView:SGRMakeMiniPlayer()];
-        [self.accessory.contentView registerForTraitChanges:@[UITraitTabAccessoryEnvironment.class] withTarget:self action:@selector(minimizedChanged)];
+        // Split Search is always on; the accessory and OnScrollDown are the Apple Music style player.
+        if (sg_inline) {
+            self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
+            self.accessory = [[UITabAccessory alloc] initWithContentView:SGRMakeMiniPlayer()];
+            [self.accessory.contentView registerForTraitChanges:@[UITraitTabAccessoryEnvironment.class] withTarget:self action:@selector(minimizedChanged)];
+        } else {
+            self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorNever;
+        }
     }
     SGAddPlayerStateObserver(self);
     // Setting the controller up above can load its view, so viewDidLoad may have run with no accessory yet.
@@ -603,6 +759,7 @@ static void nameScrollView(void) {
     tap.cancelsTouchesInView = NO;
     [self.tabBar addGestureRecognizer:tap];
     [self playerStateDidChange:SGPlayerState()];
+    SGLog(@"tab bar: split Search on, mini player %@", sg_inline ? @"on" : @"off");
 }
 
 // The accessory is inline beside the minimized bar; with no track there is no accessory and no telling.
@@ -612,7 +769,6 @@ static void nameScrollView(void) {
 }
 
 - (void)minimizedChanged {
-    SGLog(@"tab bar: %@", self.minimized ? @"minimized" : @"expanded");
     if (self.stockBar) syncBar(self.stockBar);
 }
 
@@ -623,7 +779,6 @@ static void nameScrollView(void) {
 
 // A tap on the minimized selected tab only expands the bar, with no shouldSelectTab.
 - (void)leadingTapped:(UITapGestureRecognizer *)tap {
-    SGLog(@"tab bar: the minimized leading tab takes the tap for %@", labelIn(self.sources.firstObject).text);
     SGRTabPicked(self.sources.firstObject);
     forwardTap(self.sources.firstObject);
 }
@@ -631,6 +786,10 @@ static void nameScrollView(void) {
 // The mini player is there while Spotify has a track to show on its bar, paused or not.
 - (void)playerStateDidChange:(SPTPlayerState *)state {
     if (@available(iOS 26.0, *)) {
+        if (!sg_inline) {
+            if (self.bottomAccessory) [self setBottomAccessory:nil animated:NO];
+            return;
+        }
         BOOL track = SGURIString(state.track.URI).length > 0;
         UITabAccessory *want = track ? self.accessory : nil;
         if (self.bottomAccessory != want) [self setBottomAccessory:want animated:self.viewIfLoaded.window != nil];
@@ -642,9 +801,15 @@ static void nameScrollView(void) {
     NSUInteger index = [self.tabs indexOfObject:tab];
     self.leadRedirected = self.touchedLead && [self isMiddle:index];
     if (self.leadRedirected) index = 0;
-    if (index < self.sources.count) SGRTabPicked(self.sources[index]);
+    UIView *source = index < self.sources.count ? self.sources[index] : nil;
+    BOOL search = isSearchItem(source);
+    if (source) SGRTabPicked(source);
     // Home tapped while on Home pops Spotify's stack, which would take Mod Settings straight off it.
-    if (index < self.sources.count && !self.holding) forwardTap(self.sources[index]);
+    if (source && !self.holding) forwardTap(source);
+    // UISearchTab's own search mode would open on the empty stand-in page. Spotify's field is asked
+    // for here, including when the tab already looks selected and the field never took focus.
+    if (search && !self.holding) SGRFocusSearchPage();
+    else if (!search) SGRCancelSearchFocus();
     UIView *stockBar = self.stockBar;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (stockBar) syncBar(stockBar);
@@ -732,10 +897,7 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
     stockBar.superview.layer.backgroundColor = NULL;
 
     UIView *view = container.view;
-    if (!CGRectEqualToRect(host.frame, view.bounds)) {
-        SGLog(@"tab bar: host frame %@ -> %@", NSStringFromCGRect(host.frame), NSStringFromCGRect(view.bounds));
-        host.frame = view.bounds;
-    }
+    if (!CGRectEqualToRect(host.frame, view.bounds)) host.frame = view.bounds;
     if (host.superview != view) {
         [tabs beginAppearanceTransition:YES animated:NO];
         [view addSubview:host];
@@ -743,7 +905,7 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
         tabs.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [host addSubview:tabs.view];
         [tabs endAppearanceTransition];
-        SGLog(@"tab bar: the mini player's tab bar controller is up over %@", NSStringFromCGRect(view.bounds));
+        SGLog(@"tab bar: the split tab bar controller is up over %@", NSStringFromCGRect(view.bounds));
         dispatch_async(dispatch_get_main_queue(), ^{ searchPageScroll(); });
     } else if (view.subviews.lastObject != host) {
         [view bringSubviewToFront:host];
@@ -759,56 +921,91 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
     if (!sources.count) return;
     BOOL hideLabels = SGHidden(SGRKeyNavbarHideLabels);
 
-    if (![sources isEqualToArray:tabs.sources]) {
+    // Search in the middle of the model (Home, Search, Library) is still drawn in the trailing
+    // circle, and the regular tab that ends up last in the leading platter is the one UIKit lays
+    // out with the search button's metrics: image view 1x1, title the first letter. Regular tabs
+    // stay in Spotify's order; Search is appended so it is the last tab.
+    if (![sources isEqualToArray:tabs.stockOrder]) {
+        NSMutableArray<UIView *> *ordered = [NSMutableArray array];
         NSMutableArray<UITab *> *list = [NSMutableArray array];
+        UIView *searchSource = nil;
+        UITab *searchTabBuilt = nil;
+        NSMutableArray<NSString *> *platterNames = [NSMutableArray array];
+        NSString *circle = @"none";
         for (UIView *source in sources) {
-            NSString *title = hideLabels ? @"" : (labelIn(source).text ?: @"");
+            NSString *full = labelIn(source).text ?: @"";
+            BOOL search = isSearchItem(source);
+            NSString *title = hideLabels ? @"" : full;
             UITab *tab;
-            // UIKit keeps a search tab in its own circle beside the minimized bar, so the last tab of the
-            // Navbar order is one, whichever it is.
-            if (sources.count > 1 && source == sources.lastObject) {
-                UISearchTab *search = [[UISearchTab alloc] initWithViewControllerProvider:^UIViewController *(UITab *t) { return inlinePage(t); }];
-                search.title = title;
-                search.image = glyphOf(source, NO);
-                search.automaticallyActivatesSearch = NO;
-                tab = search;
+            // Only Search is a UISearchTab. The last visible item used to become the circle, so
+            // while Create was hiding, La tua libreria was that circle and drew as its first letter.
+            if (search) {
+                UISearchTab *searchTab = [[UISearchTab alloc] initWithViewControllerProvider:^UIViewController *(UITab *t) { return inlinePage(t); }];
+                searchTab.title = title;
+                searchTab.image = glyphOf(source, NO);
+                // automaticallyActivatesSearch opens UIKit's search on this tab's view controller,
+                // which is an empty stand-in, not Spotify's Search page: the tap then never focuses
+                // Spotify's field. The circle only selects; shouldSelectTab forwards to Spotify and
+                // asks for the field.
+                searchTab.automaticallyActivatesSearch = NO;
+                tab = searchTab;
+                searchSource = source;
+                searchTabBuilt = tab;
+                circle = full.length ? full : @"search";
             } else {
                 NSString *identifier = [NSString stringWithFormat:@"spotifyglass.tab.%lu", (unsigned long)list.count];
-                tab = [[UITab alloc] initWithTitle:title image:glyphOf(source, NO) identifier:identifier
+                UIImage *glyph = glyphOf(source, NO);
+                tab = [[UITab alloc] initWithTitle:title image:glyph identifier:identifier
                             viewControllerProvider:^UIViewController *(UITab *t) { return inlinePage(t); }];
+                [ordered addObject:source];
+                [list addObject:tab];
+                [platterNames addObject:[NSString stringWithFormat:@"%@%@", title, glyph ? @"" : @" (no glyph)"]];
             }
-            [list addObject:tab];
         }
-        tabs.sources = sources;
+        if (searchSource && searchTabBuilt) {
+            [ordered addObject:searchSource];
+            [list addObject:searchTabBuilt];
+        }
+        tabs.stockOrder = sources;
+        tabs.sources = ordered;
         tabs.tabs = list;
-        SGLog(@"tab bar: %lu tabs on the mini player's bar, %@ in the trailing circle", (unsigned long)list.count, labelIn(sources.lastObject).text);
+        SGLog(@"tab bar: %lu tabs, platter %@, circle %@ last",
+              (unsigned long)list.count,
+              platterNames.count ? [platterNames componentsJoinedByString:@", "] : @"none", circle);
     }
 
-    // Spotify's selected tab shows its filled icon, as UITabBarItem's selectedImage did on the other bar.
-    // Minimized, UIKit leads with the selected tab, or with the last one picked while the trailing one is
-    // selected. The middle tabs all wear the first tab's glyph, unlit, so the first is what leads.
+    // Spotify's selected tab shows its filled icon. UIKit lays the platter out.
+    NSArray<UIView *> *shown = tabs.sources ?: @[];
     UITab *selected = nil;
     UIView *current = SGRCurrentModTab();
-    NSUInteger modTab = current ? [sources indexOfObject:current] : NSNotFound;
+    NSUInteger modTab = current ? [shown indexOfObject:current] : NSNotFound;
     BOOL missing = NO;
-    static UIImage *leadFrom, *lead;
-    UIImage *leadGlyph = tabs.minimized ? glyphOf(sources.firstObject, NO) : nil;
-    if (leadGlyph != leadFrom) {
-        leadFrom = leadGlyph;
-        lead = [leadGlyph imageWithTintColor:UIColor.whiteColor renderingMode:UIImageRenderingModeAlwaysOriginal];
-    }
-    for (NSUInteger i = 0; i < sources.count && i < tabs.tabs.count; i++) {
+    for (NSUInteger i = 0; i < shown.count && i < tabs.tabs.count; i++) {
         UITab *tab = tabs.tabs[i];
-        BOOL active = modTab != NSNotFound ? i == modTab : isActive(sources[i]);
+        BOOL active = modTab != NSNotFound ? i == modTab : isActive(shown[i]);
         if (active && !selected) selected = tab;
-        UIImage *image = glyphOf(sources[i], active);
+        if ([tab isKindOfClass:UISearchTab.class]) {
+            UISearchTab *search = (UISearchTab *)tab;
+            if (search.automaticallyActivatesSearch) search.automaticallyActivatesSearch = NO;
+        }
+        UIImage *image = [tab isKindOfClass:UISearchTab.class] ? searchTabImage(shown[i], active) : glyphOf(shown[i], active);
         missing |= !image;
-        if (lead && [tabs isMiddle:i]) image = lead;
         if (image && tab.image != image) tab.image = image;
+        if (![tab isKindOfClass:UISearchTab.class] && !hideLabels) {
+            NSString *full = labelIn(shown[i]).text ?: @"";
+            if (full.length && ![tab.title isEqualToString:full]) tab.title = full;
+        }
     }
     if (selected && tabs.selectedTab != selected) {
         SGLog(@"tab bar: selection follows Spotify to %@", selected.title);
         tabs.selectedTab = selected;
+    }
+    if (selected) {
+        NSUInteger index = [tabs.tabs indexOfObject:selected];
+        if (index < shown.count && isSearchItem(shown[index])) {
+            UIView *page = containerOf(stockBar).view;
+            if (page) SGRRaiseSearchChrome(page);
+        }
     }
     if (!sg_pageScroll.window) searchPageScroll();
     static NSUInteger retries;
@@ -830,14 +1027,13 @@ static BOOL isPageScroll(UIScrollView *scroll) {
     UIView *container = host.superview;
     if (!container || !scroll.window || scroll.hidden || scroll.pagingEnabled) return NO;
     if (![scroll isDescendantOfView:container] || [scroll isDescendantOfView:host]) return NO;
-    return scroll.bounds.size.height >= container.bounds.size.height * 0.5;
+    // A playlist list under a tall header is still the page list when it covers about a third of the screen.
+    return scroll.bounds.size.height >= container.bounds.size.height * 0.35;
 }
 
-static void takePageScroll(UIScrollView *scroll, NSString *why) {
+static void takePageScroll(UIScrollView *scroll) {
     if (sg_pageScroll == scroll) return;
     sg_pageScroll = scroll;
-    static NSUInteger logged;
-    if (logged++ < 20) SGLog(@"tab bar: follows %@ %p %@ (%@)", NSStringFromClass(scroll.class), scroll, NSStringFromCGRect(scroll.frame), why);
     nameScrollView();
 }
 
@@ -846,7 +1042,7 @@ static void considerScrollView(UIScrollView *scroll) {
     UIScrollView *current = sg_pageScroll;
     if (current == scroll) return;
     if (current.window && [current isDescendantOfView:scroll]) return;
-    takePageScroll(scroll, @"came on screen");
+    takePageScroll(scroll);
 }
 
 static void searchPageScroll(void) {
@@ -858,19 +1054,14 @@ static void searchPageScroll(void) {
     if (now - last < 1) return;
     last = now;
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:container];
-    NSUInteger found = 0;
     while (queue.count) {
         UIView *view = queue.firstObject;
         [queue removeObjectAtIndex:0];
         if (view == sg_inlineHost || view.hidden || view.alpha < 0.01) continue;
-        if ([view isKindOfClass:UIScrollView.class] && isPageScroll((UIScrollView *)view)) {
-            found++;
+        if ([view isKindOfClass:UIScrollView.class] && isPageScroll((UIScrollView *)view))
             considerScrollView((UIScrollView *)view);
-        }
         [queue addObjectsFromArray:view.subviews];
     }
-    static NSUInteger logged;
-    if (!sg_pageScroll.window && logged++ < 5) SGLog(@"tab bar: no page list found to minimize by (%lu looked at)", (unsigned long)found);
 }
 
 @interface SGRScrollDrag : NSObject
@@ -879,18 +1070,14 @@ static void searchPageScroll(void) {
 @implementation SGRScrollDrag
 + (void)dragged:(UIPanGestureRecognizer *)pan {
     UIScrollView *scroll = (UIScrollView *)pan.view;
-    if (pan.state == UIGestureRecognizerStateEnded && scroll == sg_pageScroll) {
-        static NSUInteger logged;
-        UIEdgeInsets inset = scroll.adjustedContentInset;
-        if (logged++ < 40) SGLog(@"tab bar: drag ended on the followed list, offset %.0f, inset top %.0f bottom %.0f, content %.0f of %.0f, page names it %d",
-                                 scroll.contentOffset.y, inset.top, inset.bottom, scroll.contentSize.height, scroll.bounds.size.height,
-                                 [sg_inlineTabs.selectedViewController contentScrollViewForEdge:NSDirectionalRectEdgeBottom] == scroll);
+    if (pan.state == UIGestureRecognizerStateBegan && [scroll isKindOfClass:UIScrollView.class] && scroll != sg_pageScroll && isPageScroll(scroll)) {
+        CGPoint velocity = [pan velocityInView:scroll];
+        if (fabs(velocity.y) > fabs(velocity.x)) takePageScroll(scroll);
     }
-    if (pan.state != UIGestureRecognizerStateBegan) return;
-    if (![scroll isKindOfClass:UIScrollView.class] || scroll == sg_pageScroll || !isPageScroll(scroll)) return;
-    CGPoint velocity = [pan velocityInView:scroll];
-    if (fabs(velocity.y) <= fabs(velocity.x)) return;
-    takePageScroll(scroll, @"dragged");
+    if (scroll == sg_pageScroll) {
+        if (pan.state == UIGestureRecognizerStateBegan) sg_dragActive = YES;
+        else if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled) sg_dragActive = NO;
+    } else if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled) sg_dragActive = NO;
 }
 @end
 
@@ -898,6 +1085,17 @@ static char kDragKey;
 
 %group SGRInlinePlayerScroll
 %hook UIScrollView
+- (void)setContentOffset:(CGPoint)offset {
+    CGPoint old = self.contentOffset;
+    %orig;
+    if (!sg_inlineTabs || fabs(offset.y - old.y) < 0.5 || self.bounds.size.height < 200) return;
+    UIScrollView *scroll = (UIScrollView *)self;
+    if (!isPageScroll(scroll)) return;
+    if (sg_pageScroll != scroll) {
+        sg_pageScroll = scroll;
+        nameScrollView();
+    }
+}
 - (void)didMoveToWindow {
     %orig;
     if (!self.window) return;
@@ -940,7 +1138,6 @@ static BOOL sg_barPass, sg_itemsLaidOut;
     if (sg_itemsLaidOut) SGRComposeTabBar((UIView *)self);
     holdHome((UIView *)self);
     syncBar((UIView *)self);
-    SGRLogTabBarRow((UIView *)self);
 }
 %end
 
@@ -955,7 +1152,6 @@ static void itemDidLayOut(UIView *item) {
     SGRComposeTabBar(bar);
     holdHome(bar);
     syncBar(bar);
-    SGRLogTabBarRow(bar);
 }
 
 %hook _TtC23NavigationUI_TabBarImpl21TabBarItemElementView
@@ -1000,7 +1196,11 @@ static void itemDidLayOut(UIView *item) {
 
 %ctor {
     if (!SGRedesignedUI()) return;
-    if (@available(iOS 26.0, *)) sg_inline = SGRInlinePlayer();
+    if (@available(iOS 26.0, *)) {
+        // Split bar always; mini player accessory only when the setting is on.
+        sg_systemTabs = YES;
+        sg_inline = SGRInlinePlayer();
+    }
     %init;
     if (sg_inline) %init(SGRInlinePlayerScroll);
     SGRequireClasses(@[
