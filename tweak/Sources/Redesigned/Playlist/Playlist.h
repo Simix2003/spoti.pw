@@ -29,7 +29,7 @@ void SGRPlaylistTakeCuration(UIView *cell);
 // and, unlike the pill, is in the header rather than in a cell the list reuses.
 void SGRPlaylistTakeSort(UIView *page, UIView *button);
 // YES when this page's curation row has Spotify's Mix pill. That is the mixed playlist the Play
-// capsule shimmers for; a playlist without the pill is not. NO until the row has been seen.
+// capsule draws a glow around; a playlist without the pill is not. NO until the row has been seen.
 BOOL SGRPlaylistIsMixed(UIView *page);
 
 // The playlist page `view` is on, or nil: SPTFreeTierPlaylistEncoreHeaderViewController's own view, the one
