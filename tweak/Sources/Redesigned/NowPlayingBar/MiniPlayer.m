@@ -114,7 +114,10 @@ static __weak SGRMiniPlayer *sg_miniPlayer;
 - (void)environmentChanged {
     [self setNeedsLayout];
     static NSUInteger logged;
-    if (logged++ < 60) SGLog(@"mini player: %@", [self isInline] ? @"inline (bar minimized)" : @"expanded");
+    if (logged++ < 60) SGLog(@"mini player: %@ frame %@ trait %@",
+                             [self isInline] ? @"inline (bar minimized)" : @"expanded",
+                             NSStringFromCGRect([self convertRect:self.bounds toView:nil]),
+                             [self isInline] ? @"inline" : @"regular");
 }
 
 // Between the selected tab and Search the accessory is a short capsule, and only the title fits.
