@@ -252,6 +252,12 @@ Redesigned:
                   Spotify's: they were taken out when this was first built and put back in 0.21 (issue #20), since
                   sorting a library is not something the page can do without, and Spotify already draws them on the
                   system's own glass
+    Account/      the trailing avatar on Home, Search and Library opens a Music-style page sheet in place of Spotify's
+                  left SideDrawer (Account.h): Spotify's drawer still presents, out of sight, and the sheet is read off
+                  its profile header and list -- Mod Settings first, then add account, the plan, listening stats, recents,
+                  updates, and settings -- each row fired through Spotify's own ListRow. Friend activity and recent chats
+                  stay out of the sheet. A drawer that cannot be claimed, or whose rows never arrive, is shown as Spotify
+                  draws it. Always on in the redesign.
     Playlist/     the playlist page (Liked Songs and one's own too, all three being the same page) the way the Music
                   app lays one out: the cover full bleed across the top dissolving into the page's field with no seam,
                   the title, the creator after their picture and the length centred under it, one row of glass
