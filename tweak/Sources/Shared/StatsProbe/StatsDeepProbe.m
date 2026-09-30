@@ -601,7 +601,9 @@ void SGStatsDeepDump(void) {
         // Prefer dumping the first interesting child content of a stock cell.
         if ([view isKindOfClass:UICollectionViewCell.class] || [view isKindOfClass:UITableViewCell.class]) {
             @try {
-                for (UIView *sub in view.contentView.subviews.count ? view.contentView.subviews : view.subviews) {
+                UIView *content = [(id)view contentView];
+                NSArray<UIView *> *kids = content.subviews.count ? content.subviews : view.subviews;
+                for (UIView *sub in kids) {
                     if (!interestingClass(NSStringFromClass(object_getClass(sub)))) continue;
                     appendCapped(out, [NSString stringWithFormat:@"  content %@\n", NSStringFromClass(object_getClass(sub))]);
                     dumpObject(sub, out, @"    ", 0, seen);
