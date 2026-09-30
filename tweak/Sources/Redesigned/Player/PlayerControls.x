@@ -422,9 +422,12 @@ static UIImage *clearThumb(void) {
     UIImage *thumb = show ? nil : clearThumb();
     [self setThumbImage:thumb forState:UIControlStateNormal];
     [self setThumbImage:thumb forState:UIControlStateHighlighted];
-    // Nil keeps the system track. A tint would replace it with a flat one.
-    self.minimumTrackTintColor = nil;
-    self.maximumTrackTintColor = nil;
+    // Spotify's tint is green, and a nil track tint picks that up the moment the finger goes down.
+    // Clear tracks leave Spotify's own bar (kept white below) showing through; the thumb stays the
+    // system's. White tint stops the thumb taking the green as well.
+    self.minimumTrackTintColor = UIColor.clearColor;
+    self.maximumTrackTintColor = UIColor.clearColor;
+    self.tintColor = UIColor.whiteColor;
 }
 
 - (void)syncFromSpotify {
@@ -494,6 +497,20 @@ static UIImage *clearThumb(void) {
 }
 %end
 
+// A zero rect is the duration unit's first layout (device log: slider and host both height 0).
+// Putting the overlay there leaves it with nothing to draw. A short bar is grown so the thumb
+// is not clipped to that line.
+static CGRect scrubberFrameFor(UISlider *slider) {
+    CGRect frame = slider.frame;
+    if (frame.size.width < 40 || frame.size.height < 1) return CGRectNull;
+    if (frame.size.height < 28) {
+        CGFloat grow = 28 - frame.size.height;
+        frame.origin.y -= grow / 2;
+        frame.size.height = 28;
+    }
+    return frame;
+}
+
 static void watchForSeekTaps(UIView *host, UILabel *taken, UILabel *remaining) {
     UISlider *slider = (UISlider *)SGRFindByIdentifier(host, @"SPTNowPlayingSliderV2", &kSliderKey);
     if (![slider isKindOfClass:UISlider.class]) {
@@ -521,9 +538,25 @@ static void watchForSeekTaps(UIView *host, UILabel *taken, UILabel *remaining) {
         objc_setAssociatedObject(slider, &kGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         SGLog(@"redesign player: glass scrubber over %@ %@", NSStringFromClass(slider.class), NSStringFromCGRect(slider.frame));
     }
+    UIColor *white = UIColor.whiteColor;
+    UIColor *rest = [UIColor colorWithWhite:1 alpha:0.35];
+    if (![slider.minimumTrackTintColor isEqual:white]) slider.minimumTrackTintColor = white;
+    if (![slider.maximumTrackTintColor isEqual:rest]) slider.maximumTrackTintColor = rest;
+    CGRect frame = scrubberFrameFor(slider);
+    if (CGRectIsNull(frame)) {
+        glass.hidden = YES;
+        static NSUInteger waiting;
+        if (waiting++ < 4) SGLog(@"redesign player: glass scrubber waits, slider frame %@ host %@",
+                                 NSStringFromCGRect(slider.frame), NSStringFromCGRect(host.bounds));
+        return;
+    }
+    if (glass.hidden) glass.hidden = NO;
+    static NSUInteger ready;
+    if (ready++ < 3) SGLog(@"redesign player: glass scrubber frame %@ (spotify %@)",
+                           NSStringFromCGRect(frame), NSStringFromCGRect(slider.frame));
     if (glass.superview != slider.superview) [slider.superview addSubview:glass];
     if (slider.superview.subviews.lastObject != glass) [slider.superview bringSubviewToFront:glass];
-    if (!CGRectEqualToRect(glass.frame, slider.frame)) glass.frame = slider.frame;
+    if (!CGRectEqualToRect(glass.frame, frame)) glass.frame = frame;
     [glass syncFromSpotify];
 }
 
