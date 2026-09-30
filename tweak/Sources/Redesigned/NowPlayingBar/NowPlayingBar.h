@@ -31,6 +31,8 @@ UIImageView *SGRNowPlayingArtworkView(void);
 // Asks Spotify's bar to open the player, and keeps asking until the player is on screen.
 // YES once the request is taken (including when the player is already up).
 BOOL SGROpenPlayerFromBar(void);
+// YES when Spotify's bar is hidden, clear, or not in a window. The mini player's log reads this.
+BOOL SGRStockNowPlayingHidden(void);
 
 // MiniPlayer.m: the accessory's content view, and its card and artwork in `host`'s coordinates
 // (CGRectNull while it is not in a window).

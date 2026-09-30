@@ -173,6 +173,11 @@ static void pursueOpen(NSUInteger token, NSUInteger fires) {
     });
 }
 
+BOOL SGRStockNowPlayingHidden(void) {
+    UIView *view = sg_barContainer;
+    return !view || view.hidden || view.alpha < 0.01 || !view.window;
+}
+
 BOOL SGROpenPlayerFromBar(void) {
     if (SGPlayerIsOnScreen()) return YES;
     // A second tap while the present from this one is in flight would toggle the player shut.
@@ -245,11 +250,70 @@ static void restyleCardContent(UIView *card) {
     });
 }
 
+// Left and right insets that put `view` on the glass bar's content: the leading platter's left edge
+// and the Search circle's right edge. Constraints win when Spotify pinned the bar that way; the frame
+// covers a bar that was placed by hand. A missing platter uses a fixed margin, recomputed on layout.
+static void alignNowPlayingBar(UIView *view) {
+    if (SGRInlinePlayer() || !view.superview) return;
+    UIView *parent = view.superview;
+    CGFloat minX = 0, maxX = 0;
+    NSString *how = @"fallback";
+    BOOL measured = SGRTabBarContentSpan(parent, &minX, &maxX);
+    if (measured) how = @"platter";
+    else {
+        minX = 16;
+        maxX = parent.bounds.size.width - 16;
+    }
+    CGFloat left = minX, right = parent.bounds.size.width - maxX;
+    if (left < 0 || right < 0 || parent.bounds.size.width - left - right < 80) return;
+    BOOL leading = NO, trailing = NO;
+    for (NSLayoutConstraint *constraint in parent.constraints) {
+        if (!constraint.active) continue;
+        BOOL viewFirst = constraint.firstItem == view, viewSecond = constraint.secondItem == view;
+        BOOL parentFirst = constraint.firstItem == parent || constraint.firstItem == parent.safeAreaLayoutGuide;
+        BOOL parentSecond = constraint.secondItem == parent || constraint.secondItem == parent.safeAreaLayoutGuide;
+        if (constraint.firstAttribute == NSLayoutAttributeLeading && constraint.secondAttribute == NSLayoutAttributeLeading) {
+            if (viewFirst && parentSecond) {
+                if (fabs(constraint.constant - left) > 0.5) constraint.constant = left;
+                leading = YES;
+            } else if (viewSecond && parentFirst) {
+                if (fabs(constraint.constant + left) > 0.5) constraint.constant = -left;
+                leading = YES;
+            }
+        }
+        if (constraint.firstAttribute == NSLayoutAttributeTrailing && constraint.secondAttribute == NSLayoutAttributeTrailing) {
+            if (parentFirst && viewSecond) {
+                if (fabs(constraint.constant - right) > 0.5) constraint.constant = right;
+                trailing = YES;
+            } else if (viewFirst && parentSecond) {
+                if (fabs(constraint.constant + right) > 0.5) constraint.constant = -right;
+                trailing = YES;
+            }
+        }
+    }
+    CGRect target = view.frame;
+    target.origin.x = left;
+    target.size.width = parent.bounds.size.width - left - right;
+    if (!leading || !trailing) {
+        if (!CGRectEqualToRect(view.frame, target)) view.frame = target;
+    }
+    static CGFloat loggedLeft, loggedRight;
+    static NSString *loggedHow;
+    if (fabs(loggedLeft - left) < 0.5 && fabs(loggedRight - right) < 0.5 && [how isEqualToString:loggedHow]) return;
+    loggedLeft = left;
+    loggedRight = right;
+    loggedHow = [how copy];
+    SGLog(@"now playing bar: insets left %.0f right %.0f (%@)", left, right, how);
+}
+
 static void styleNowPlayingBar(UIViewController *container) {
     UIViewController *barVC = container.childViewControllers.firstObject;
     UIView *bar = barVC.viewIfLoaded ?: container.view;
     sgr_nowPlayingRoot = bar;
     sg_barContainer = container.view;
+    // The inner bar, when it is not the container itself. Insetting the container would stack on the
+    // margin Spotify already gives that inner view.
+    alignNowPlayingBar(bar == container.view ? container.view : bar);
     // The mini player in the tab bar takes the bar's place: Spotify's bar stays, laid out and loading its
     // artwork for the mini player, but nobody sees or touches it.
     // The bar's page (NowPlaying_BarPageImpl's TouchPassthroughView) stands over the tab bar container
