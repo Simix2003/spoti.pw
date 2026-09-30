@@ -1,39 +1,44 @@
 # Stats probe
 
-A read-only dump of the **Statistiche di ascolto** page, taken from that page. It does not call the network, change playback, or edit a model. The Probe pill is **off by default**: turning it on hooks navigation only after a restart. Leave it off unless you need a dump.
+Read-only dumps of **Statistiche di ascolto**. Nothing fetches, changes playback, or edits a model. The pills are **off by default** (Mod → Debug → Stats probe → Show Probe pills, then restart). Leave them off unless you need a dump.
 
-The file is `Documents/spotifyplus-stats-probe-<yyyyMMdd-HHmmss>-<page>.txt`. The page hint is a short name for the screen that was up (`home`, `minuti`, `brani`, `brani-amici`, `artisti`, `artisti-amici`, `preferiti`). One line is logged as `stats probe: pill on leaf …` when the visible page changes, and `stats probe: saved …` after a dump. Those lines are also in the on-phone log (`docs/logs.md`).
+Two pills sit at the lower right while the switch is on:
 
-## Run it
+| Pill | File | Purpose |
+|---|---|---|
+| **Probe** | `spotifyplus-stats-probe-<stamp>-<page>.txt` | View tree (labels, frames, a11y) |
+| **Deep** | `spotifyplus-stats-deep-<stamp>-<page>.txt` | HighlightsStats ElementKit **Props / ivars** + class index — what a redesign needs |
+
+The page hint is `home`, `minuti`, `brani`, `brani-amici`, `artisti`, `artisti-amici`, or `preferiti`. Log lines: `stats probe:` and `stats deep:` (`docs/logs.md`).
+
+## Run Deep (for redesign data)
 
 1. Open **Mod Settings → Mod → Debug → Stats probe**.
-2. Turn on **Show Probe pill**, then restart Spotify. The pill sits at the lower right on every screen while that switch is on (Spotify hosts Statistiche di ascolto inside a page host with no matching title, so page detection alone never finds it).
-3. Open **Statistiche di ascolto** (listening stats). The home grid is enough for the first file.
-4. Tap **Probe**. The phone taps back, a toast says the file was saved, and the share sheet opens.
-5. AirDrop or save the file.
-6. Open each sub-page and tap **Probe** again, one file each:
+2. Turn on **Show Probe pills**, then restart Spotify.
+3. Open each screen and tap **Deep** (not Probe):
+   - **Statistiche di ascolto** (home grid)
    - **Minuti di ascolto**
-   - **Brani top** (and **Brani top con amici**, if that screen is separate)
-   - **Artisti top** (and **Artisti top con amici**)
+   - **I brani top con gli amici** (and top without friends if separate)
+   - **Gli artisti top con gli amici**
    - **Brani preferiti**
-7. Turn **Show Probe pill** off again and restart when you are done. **Share last probe** on the same Debug page still sends the newest file without the pill.
+   - **Artisti preferiti** if that screen exists
+4. AirDrop or save each file from the share sheet.
+5. Turn the switch **off** and restart when done.
 
-A second tap while a dump is still writing is ignored.
+**Share last probe** sends the newest UI or Deep file.
 
-If the toast says it could not save, the `stats probe:` line in the log says `could not write`.
+## What Deep contains
 
-## What to send back
+- Loaded classes whose names contain `HighlightsStats`, with ivar names and type encodings (methods are not called).
+- Every on-screen view whose class looks like HighlightsStats / StatsDetails / Timeline / ElementKit content: class, frame, a11y, then `object_getIvar` walk (depth 3) and whitelisted getters (`props`, `model`, `viewModel`, `content`, …).
+- No `valueForKey:`. A 2 s time budget and size cap stop the walk.
 
-- One dump file per screen, from the share sheet (or the newest one from **Share last probe**).
-- The `stats probe: pill on leaf` / `stats probe: saved` lines from **Share logs**.
-- A screenshot of each sub-page you dumped.
+## What Probe contains
 
-The home grid and each sub-page are different files. The page hint in the file name is how they stay apart.
+The lighter view-tree dump (labels, buttons, image sizes, a11y). Useful for layout; not enough for models.
 
-## What the file contains
+## What to send back (redesign)
 
-- The page that matched: class, title, and whether the match was the class, the title, a child controller, or a header label. Italian titles that count are **Statistiche di ascolto**, **Minuti di ascolto**, **Brani top**, **Artisti top**, **Brani preferiti**, and those titles **con amici**.
-- The view-controller chain of that page, with class names and titles.
-- The visible view tree of the page: every label’s text, accessibility id, label, and value, whether an image view has an image, and frames. The walk does not read arbitrary ivars or call `valueForKey:`.
-
-Fields whose names contain `token`, `secret`, `auth`, `password`, or `cookie` are left out. A string that already looks like a bearer token is replaced with `[redacted]`. The walk stops at about 400 KB.
+- One **Deep** file per screen.
+- Optional matching screenshots.
+- `stats deep: saved …` lines from **Share logs**.

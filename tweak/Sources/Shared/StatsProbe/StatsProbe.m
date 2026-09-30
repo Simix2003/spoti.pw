@@ -7,6 +7,7 @@
 // only reads UIView / UIViewController properties (text, frames, accessibility, image size).
 // It does not walk arbitrary ivars.
 #import "StatsProbe.h"
+#import "StatsDeepProbe.h"
 #import "Core/SGCore.h"
 #import "Settings/SGPageStyle.h"
 
@@ -22,6 +23,7 @@ static const NSUInteger kMaxViews = 350;
 static const NSUInteger kMaxDepth = 12;
 static const NSUInteger kMaxString = 180;
 static NSString *const kProbeID = @"spotifyplus.stats-probe";
+static NSString *const kDeepID = @"spotifyplus.stats-deep";
 
 static BOOL sg_busy = NO;
 static BOOL sg_installed = NO;
@@ -30,6 +32,7 @@ static NSString *sg_loggedPage;
 static NSUInteger sg_toastGen;
 static __weak UILabel *sg_toast;
 static __weak UIButton *sg_probeButton;
+static __weak UIButton *sg_deepButton;
 
 #pragma mark - detection
 
@@ -132,8 +135,9 @@ static NSString *controllerTitle(UIViewController *vc) {
 
 static BOOL viewIsProbe(UIView *view) {
     if (!view) return NO;
-    if ([view.accessibilityIdentifier isEqualToString:kProbeID]) return YES;
-    return view == sg_probeButton;
+    NSString *ident = view.accessibilityIdentifier;
+    if ([ident isEqualToString:kProbeID] || [ident isEqualToString:kDeepID]) return YES;
+    return view == sg_probeButton || view == sg_deepButton;
 }
 
 static BOOL headerLabel(UIView *view, UILabel *label, UIView *page) {
@@ -369,7 +373,9 @@ static NSString *newestProbePath(void) {
     NSArray<NSString *> *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil];
     NSString *best = nil;
     for (NSString *name in names) {
-        if (![name hasPrefix:@"spotifyplus-stats-probe-"] || ![name hasSuffix:@".txt"]) continue;
+        BOOL ui = [name hasPrefix:@"spotifyplus-stats-probe-"] && [name hasSuffix:@".txt"];
+        BOOL deep = [name hasPrefix:@"spotifyplus-stats-deep-"] && [name hasSuffix:@".txt"];
+        if (!ui && !deep) continue;
         if (!best || [name compare:best] == NSOrderedDescending) best = name;
     }
     return best ? [dir stringByAppendingPathComponent:best] : nil;
@@ -725,15 +731,39 @@ static void probeTapped(void) {
     dumpNow();
 }
 
-static void placeProbe(UIButton *button, UIWindow *window) {
-    CGFloat width = 78;
-    CGFloat height = 34;
-    CGFloat bottom = window.safeAreaInsets.bottom + 78;
-    button.frame = CGRectMake(window.bounds.size.width - width - 14, window.bounds.size.height - bottom - height, width, height);
-    button.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleTopMargin;
+static void deepTapped(void) {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ deepTapped(); });
+        return;
+    }
+    if (sg_busy) {
+        toast(@"Stats probe is already running");
+        return;
+    }
+    sg_busy = YES;
+    UIImpactFeedbackGenerator *haptic = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    [haptic impactOccurred];
+    @try { SGStatsDeepDump(); }
+    @catch (NSException *ex) {
+        SGLog(@"stats deep: stopped (%@)", ex.name);
+        toast(@"Deep probe stopped");
+    }
+    sg_busy = NO;
 }
 
-static UIButton *makeProbe(void) {
+static void placePills(UIButton *probe, UIButton *deep, UIWindow *window) {
+    CGFloat width = 78;
+    CGFloat height = 34;
+    CGFloat gap = 8;
+    CGFloat bottom = window.safeAreaInsets.bottom + 78;
+    CGFloat x = window.bounds.size.width - width - 14;
+    probe.frame = CGRectMake(x, window.bounds.size.height - bottom - height, width, height);
+    probe.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleTopMargin;
+    deep.frame = CGRectMake(x, CGRectGetMinY(probe.frame) - height - gap, width, height);
+    deep.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleTopMargin;
+}
+
+static UIButton *makePill(NSString *title, NSString *ident, void (^action)(void)) {
     UIButtonConfiguration *config;
     if (@available(iOS 26.0, *)) config = [UIButtonConfiguration glassButtonConfiguration];
     else config = [UIButtonConfiguration filledButtonConfiguration];
@@ -741,15 +771,15 @@ static UIButton *makeProbe(void) {
     config.baseForegroundColor = UIColor.whiteColor;
     config.baseBackgroundColor = [UIColor colorWithWhite:0.12 alpha:0.92];
     config.contentInsets = NSDirectionalEdgeInsetsMake(6, 14, 6, 14);
-    config.attributedTitle = [[NSAttributedString alloc] initWithString:@"Probe" attributes:@{
+    config.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:@{
         NSFontAttributeName: [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold],
         NSForegroundColorAttributeName: UIColor.whiteColor,
     }];
-    UIButton *button = [UIButton buttonWithConfiguration:config primaryAction:[UIAction actionWithHandler:^(__kindof UIAction *action) {
-        probeTapped();
+    UIButton *button = [UIButton buttonWithConfiguration:config primaryAction:[UIAction actionWithHandler:^(__kindof UIAction *a) {
+        if (action) action();
     }]];
-    button.accessibilityIdentifier = kProbeID;
-    button.accessibilityLabel = @"Probe";
+    button.accessibilityIdentifier = ident;
+    button.accessibilityLabel = title;
     button.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     return button;
 }
@@ -757,9 +787,8 @@ static UIButton *makeProbe(void) {
 static void refreshProbe(void) {
     if (sg_busy) return;
     if (UIApplication.sharedApplication.applicationState == UIApplicationStateBackground) return;
-    // The stats screen is a MusicAppPageHostingViewController whose title lives only in
-    // labels — class/title matching never sees it. While the Debug switch is on the pill
-    // stays visible on every screen; the dump reads whatever page is up.
+    // While the Debug switch is on both pills stay visible on every screen; Deep walks
+    // HighlightsStats ElementKit models, Probe dumps the view tree.
     UIWindow *window = keyWindow();
     if (!window) return;
     UIViewController *leaf = nil;
@@ -773,15 +802,23 @@ static void refreshProbe(void) {
               leaf ? NSStringFromClass(object_getClass(leaf)) : @"none",
               title.length ? title : @"(none)");
     }
-    UIButton *button = sg_probeButton;
-    if (!button) {
-        button = makeProbe();
-        sg_probeButton = button;
+    UIButton *probe = sg_probeButton;
+    if (!probe) {
+        probe = makePill(@"Probe", kProbeID, ^{ probeTapped(); });
+        sg_probeButton = probe;
     }
-    if (button.superview != window) [window addSubview:button];
-    placeProbe(button, window);
-    button.hidden = NO;
-    [window bringSubviewToFront:button];
+    UIButton *deep = sg_deepButton;
+    if (!deep) {
+        deep = makePill(@"Deep", kDeepID, ^{ deepTapped(); });
+        sg_deepButton = deep;
+    }
+    if (probe.superview != window) [window addSubview:probe];
+    if (deep.superview != window) [window addSubview:deep];
+    placePills(probe, deep, window);
+    probe.hidden = NO;
+    deep.hidden = NO;
+    [window bringSubviewToFront:probe];
+    [window bringSubviewToFront:deep];
 }
 
 static void scheduleRefresh(void) {
@@ -830,9 +867,9 @@ void SGStatsProbeShareLast(void) {
         dispatch_async(dispatch_get_main_queue(), ^{ SGStatsProbeShareLast(); });
         return;
     }
-    NSString *path = sg_lastPath ?: newestProbePath();
+    NSString *path = sg_lastPath ?: SGStatsDeepLastPath() ?: newestProbePath();
     if (!path || ![NSFileManager.defaultManager fileExistsAtPath:path]) {
-        alert(@"No stats probe yet", @"Turn on Show Probe pill under Mod → Debug → Stats probe, restart, open Statistiche di ascolto, tap Probe, then share.");
+        alert(@"No stats probe yet", @"Turn on Show Probe pill under Mod → Debug → Stats probe, restart, open Statistiche di ascolto, tap Deep (models) or Probe (views), then share.");
         return;
     }
     presentFile(path);

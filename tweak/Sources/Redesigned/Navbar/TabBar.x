@@ -677,6 +677,10 @@ static void syncBar(UIView *stockBar) {
 @property (nonatomic, readonly) BOOL minimized;
 // Slides the leading platter when kNavbarCustomLayout is on. With it off this does not run.
 - (void)placeLeadingCluster;
+// With the mini player accessory up, keep Home/Library content-sized (not stretched to a 3-tab gap).
+- (BOOL)shouldHugLeadingTabs;
+- (void)applyHugLeadingTabs;
+- (void)hugLeadingPlatter;
 // The last touch on the bar went down on the minimized leading tab, and its tap went to the first tab
 // while UIKit selects the one under it.
 @property (nonatomic) BOOL touchedLead, leadRedirected;
@@ -1224,21 +1228,23 @@ static void sg_logLeadingTabs(SGRInlineTabs *tabs) {
 // circle off the trailing edge and centered the remaining tabs with it. Minimized, UIKit places
 // the leading tab and that circle itself, which also needs the full width.
 //
-// With a bottom accessory, UIKit stretches Fixed leading tabs across the gap to Search. itemWidth
-// + centered positioning keeps them content-sized — the same compact look as with no accessory —
-// without the platter-frame / title-shortening passes behind kNavbarCustomLayout.
+// With a bottom accessory, UIKit stretches Fixed leading tabs across the gap to Search — the same
+// widths as a three-tab platter. itemWidth alone does not stick on the glass bar, so hugLeadingPlatter
+// also shrinks that platter and packs the buttons to content size after every layout pass.
 - (CGFloat)fittingItemWidth {
     if (@available(iOS 26.0, *)) {
         NSUInteger regular = 0;
-        CGFloat need = 88;
+        CGFloat need = 0;
         for (NSUInteger i = 0; i < self.sources.count && i < self.tabs.count; i++) {
             if (isSearchItem(self.sources[i])) continue;
             regular++;
             NSString *title = self.tabs[i].title.length ? self.tabs[i].title : labelIn(self.sources[i]).text;
-            CGFloat width = sg_titlePixels(title) + 18;
+            // Icon above title: width is the label (or icon) plus side padding — not icon+label in a row.
+            CGFloat width = MAX(28, sg_titlePixels(title)) + 20;
+            if (width < 64) width = 64;
             if (width > need) need = width;
         }
-        if (!regular) return 0;
+        if (!regular || need < 1) return 0;
         CGFloat room = sg_tabRoom(self.view.bounds.size.width, regular);
         if (need > room) need = room;
         return need;
@@ -1247,36 +1253,113 @@ static void sg_logLeadingTabs(SGRInlineTabs *tabs) {
 }
 
 - (BOOL)shouldHugLeadingTabs {
-    if (!sg_inline) return NO;
+    if (!sg_inline || self.minimized) return NO;
     if (@available(iOS 26.0, *)) return self.bottomAccessory != nil;
     return NO;
 }
 
 - (void)applyHugLeadingTabs {
     UITabBar *bar = self.tabBar;
-    if (self.minimized) {
-        if (bar.itemWidth != 0) bar.itemWidth = 0;
+    if (![self shouldHugLeadingTabs]) {
+        if (!kNavbarCustomLayout && bar.itemWidth != 0) bar.itemWidth = 0;
         return;
     }
     CGFloat width = [self fittingItemWidth];
-    if (width > 1 && fabs(bar.itemWidth - width) > 0.5) {
+    if (width < 1) return;
+    // Always re-assert: UIKit's layout pass clears or stretches without this.
+    if (fabs(bar.itemWidth - width) > 0.25) {
         bar.itemWidth = width;
         static CGFloat logged;
         if (fabs(logged - width) > 0.5) {
             logged = width;
             SGLog(@"tab bar: item width %.0f (hug accessory)", width);
         }
+    } else {
+        bar.itemWidth = width;
     }
     if (bar.itemPositioning != UITabBarItemPositioningCentered)
         bar.itemPositioning = UITabBarItemPositioningCentered;
 }
 
+// UIKit's accessory layout keeps the leading glass as wide as a full three-tab cluster. Shrink that
+// platter and pack its buttons to the content item width — without the title-shortening pass that
+// kNavbarCustomLayout used to run.
+- (void)hugLeadingPlatter {
+    if (![self shouldHugLeadingTabs]) return;
+    UITabBar *bar = self.tabBar;
+    CGFloat barW = bar.bounds.size.width;
+    CGFloat itemW = [self fittingItemWidth];
+    if (barW < 80 || itemW < 1) return;
+
+    NSMutableArray<UIView *> *platters = [NSMutableArray array];
+    collectPlatters(bar, platters, 0);
+    UIView *tabsPlatter = nil;
+    CGRect tabsRect = CGRectZero;
+    for (UIView *platter in platters) {
+        CGRect rect = [platter convertRect:platter.bounds toView:bar];
+        if (rect.size.width > barW - 8) continue;
+        BOOL square = rect.size.width < 110 && rect.size.width <= rect.size.height * 1.5;
+        if (square) continue;
+        if (!tabsPlatter || rect.size.width > tabsRect.size.width) {
+            tabsPlatter = platter;
+            tabsRect = rect;
+        }
+    }
+    if (!tabsPlatter) return;
+
+    NSUInteger regular = 0;
+    for (UIView *source in self.sources) if (!isSearchItem(source)) regular++;
+    if (regular < 1) return;
+
+    CGFloat pad = 10;
+    CGFloat want = pad * 2 + itemW * (CGFloat)regular;
+    if (want > barW - 80) want = barW - 80;
+    // Already hugging (same look as mini player off).
+    if (tabsRect.size.width <= want + 6) return;
+
+    CGFloat margin = 16;
+    CGPoint leading = [bar convertPoint:CGPointMake(margin, CGRectGetMinY(tabsRect)) toView:tabsPlatter.superview];
+    CGRect platterFrame = tabsPlatter.frame;
+    platterFrame.origin.x = leading.x;
+    platterFrame.size.width = want;
+    tabsPlatter.frame = platterFrame;
+
+    NSMutableArray<NSArray<UIView *> *> *rows = [NSMutableArray array];
+    collectButtonRows(tabsPlatter, rows);
+    for (NSArray<UIView *> *buttons in rows) {
+        if (buttons.count < regular) continue;
+        NSArray<UIView *> *ordered = [buttons sortedArrayUsingComparator:^NSComparisonResult(UIView *a, UIView *b) {
+            if (a.frame.origin.x < b.frame.origin.x) return NSOrderedAscending;
+            if (a.frame.origin.x > b.frame.origin.x) return NSOrderedDescending;
+            return NSOrderedSame;
+        }];
+        CGFloat x = pad;
+        NSUInteger n = MIN(ordered.count, regular);
+        for (NSUInteger i = 0; i < n; i++) {
+            UIView *button = ordered[i];
+            CGRect frame = button.frame;
+            // Only rewrite when stretched; leave height/y alone.
+            if (fabs(frame.origin.x - x) > 0.5 || fabs(frame.size.width - itemW) > 0.5) {
+                frame.origin.x = x;
+                frame.size.width = itemW;
+                button.frame = frame;
+            }
+            x += itemW;
+        }
+    }
+    static CGFloat loggedWant;
+    if (fabs(loggedWant - want) > 0.5) {
+        loggedWant = want;
+        SGLog(@"tab bar: leading platter %.0f → %.0f (item %.0f × %lu)", tabsRect.size.width, want, itemW, (unsigned long)regular);
+    }
+}
+
 - (void)viewDidLayoutSubviews {
     UITabBar *bar = self.tabBar;
-    BOOL hug = [self shouldHugLeadingTabs];
-    if (hug || kNavbarCustomLayout) [self applyHugLeadingTabs];
-    else if (bar.itemWidth != 0) bar.itemWidth = 0;
     [super viewDidLayoutSubviews];
+    // After UIKit lays the accessory bar out — before, itemWidth does not stick.
+    if ([self shouldHugLeadingTabs] || kNavbarCustomLayout) [self applyHugLeadingTabs];
+    else if (bar.itemWidth != 0) bar.itemWidth = 0;
     if (sg_inline && !sg_pageScroll.window) searchPageScroll();
     if (!kNavbarCustomLayout) return;
     // Width of one tab, not of the bar. fullWidth/count stretched two tabs across the gap Create
@@ -1349,6 +1432,10 @@ static void sg_logLeadingTabs(SGRInlineTabs *tabs) {
             searchPageScroll();
             nameScrollView();
             if (changed) SGLog(@"tab bar: accessory %@, behavior %ld", track ? @"on" : @"off", (long)self.tabBarMinimizeBehavior);
+        }
+        if (want) {
+            // Accessory attachment reflows the bar; hug before the next user-visible frame.
+            dispatch_async(dispatch_get_main_queue(), ^{ [self applyHugLeadingTabs]; });
         }
     }
 }
@@ -1858,7 +1945,16 @@ static BOOL sg_barPass, sg_itemsLaidOut;
 - (void)layoutSubviews {
     %orig;
     SGRInlineTabs *tabs = sg_inlineTabs;
-    if (!tabs || (UITabBar *)self != tabs.tabBar || tabs.minimized) return;
+    if (!tabs || (UITabBar *)self != tabs.tabBar) return;
+    // After UIKit's pass: itemWidth, then shrink the leading glass so two tabs do not fill a 3-tab gap.
+    static BOOL hugging;
+    if (!hugging && [tabs shouldHugLeadingTabs]) {
+        hugging = YES;
+        [tabs applyHugLeadingTabs];
+        [tabs hugLeadingPlatter];
+        hugging = NO;
+    }
+    if (tabs.minimized) return;
     sg_logLeadingTabs(tabs);
     if (!kNavbarCustomLayout) return;
     // setFrame on the platter can dirty layout. Don't re-enter this pass.

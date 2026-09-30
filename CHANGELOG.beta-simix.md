@@ -16,10 +16,11 @@ Release Please still owns `CHANGELOG.beta.md`.
 
 ### Fixes
 
+* with the Apple Music style mini player on, Home and Library stay content-sized instead of stretching across to Search: after UIKit's layout the leading glass platter is shrunk to the tabs' fitting width and the buttons are packed inside it (`TabBar.x`)
 * the mini player minimizes on every vertical list (Home, Search, Library, playlists, albums, and anything else above the bar): whatever scrolls on Y becomes UIKit's content scroll view immediately, with no page allow list (`TabBar.x`)
 * the mini player minimizes on Home and on Library subpages (playlist, album): follow the front vertical list from a content hit test instead of a buried Library root or a Home shelf carousel, and retarget after every nav push (`TabBar.x`)
 * with the Apple Music style mini player on, Home and Library keep their compact leading size instead of stretching to Search (`itemWidth` + centered positioning while the accessory is expanded), and the page list is linked more reliably so UIKit's `OnScrollDown` can minimize the accessory (`TabBar.x`)
-* the stats Probe pill is off until Mod → Debug → Stats probe turns it on (restart), and while on it stays on every screen so Statistiche di ascolto (a title-less `MusicAppPageHostingViewController`) still gets a dump; it used to swizzle every appear and walk the view tree from launch, which crashed Spotify (`StatsProbe.m`, `StatsProbePage.m`, `AboutSettings.m`, `docs/stats-probe.md`)
+* the stats Probe pills are off until Mod → Debug → Stats probe turns them on (restart): **Probe** dumps the view tree, **Deep** walks HighlightsStats ElementKit Props/ivars for redesign data; while on they stay on every screen so title-less hosted stats pages still get a dump (`StatsProbe.m`, `StatsDeepProbe.m`, `StatsProbePage.m`, `docs/stats-probe.md`)
 * Search is pinned as its own trailing circle (`UITabPlacementPinned` + `UISearchTab`) and the other tabs stay Fixed in the leading platter; Search is matched by stock order / locale / icon / id (so Italian Cerca still counts), and the bar rebuilds once Search is found — without a search tab UIKit kept one unified block. Apple Music style mini player is on by default so the accessory and minimize-on-scroll run without flipping a toggle (`TabBar.x`, `NowPlayingBar.x`)
 * a mixed playlist's Play glow is readable again: the softer pass left the ring mask and the layer opacity too low to see on device (`SGRActionRow.m`, `SGRHeaderInfo.m`, `PlaylistHeader.x`)
 

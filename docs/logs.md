@@ -25,6 +25,7 @@ The shared `spotifyplus-log.txt`, plus what you did just before it. Lines worth 
 - `redesign kit:`
 - `jam probe:`
 - `stats probe:`
+- `stats deep:`
 - `build:`
 
 `build:` is written once at launch and is the same branch and commit as the Build row.
