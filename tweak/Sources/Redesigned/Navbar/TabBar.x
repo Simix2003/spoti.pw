@@ -189,18 +189,118 @@ static UIImage *searchTabImage(UIView *item, BOOL active) {
     return offImage;
 }
 
-static BOOL isSearchItem(UIView *item) {
-    if (!item) return NO;
-    // Spotify's own id (trees/home: TabBar.Item.Search) is the surest mark.
+// Title -> viewURI from Spotify's tab model (NavigationUI_TabBarItemsImpl's list: "Ricerca · spotify:find").
+// The item view's accessibility id and icon name do not say Search on this build, and the Italian title
+// does not contain "search", so isSearchItem used to miss it and no UISearchTab was built.
+static NSMutableDictionary<NSString *, NSString *> *sg_uriByTitle;
+// How the Search item in the current row was recognised: uri, id, icon, title, or nil.
+static NSString *sg_searchHow;
+
+static NSString *spotifyText(id value) {
+    if ([value isKindOfClass:NSString.class]) return value;
+    if ([value isKindOfClass:NSURL.class]) return ((NSURL *)value).absoluteString;
+    if ([value respondsToSelector:@selector(absoluteString)]) {
+        id text = [value absoluteString];
+        if ([text isKindOfClass:NSString.class]) return text;
+    }
+    return nil;
+}
+
+static BOOL isSearchURI(NSString *uri) {
+    if (![uri isKindOfClass:NSString.class]) return NO;
+    NSString *rest = uri.lowercaseString;
+    if (![rest hasPrefix:@"spotify:"]) return NO;
+    rest = [rest substringFromIndex:@"spotify:".length];
+    NSRange cut = [rest rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"/?#"]];
+    if (cut.location != NSNotFound) rest = [rest substringToIndex:cut.location];
+    return [rest isEqualToString:@"find"] || [rest isEqualToString:@"search"];
+}
+
+static NSString *uriHolding(id object) {
+    if (!object || [object isKindOfClass:NSString.class] || [object isKindOfClass:NSNumber.class]) return nil;
+    NSString *text = spotifyText(object);
+    if ([text hasPrefix:@"spotify:"]) return text;
+    if (![object respondsToSelector:NSSelectorFromString(@"viewURI")]) return nil;
+    id value = nil;
+    @try {
+        value = [object valueForKey:@"viewURI"];
+    } @catch (NSException *exception) {
+        return nil;
+    }
+    text = spotifyText(value);
+    return [text hasPrefix:@"spotify:"] ? text : nil;
+}
+
+// The row's views do not publish the URI. The model object on the view does, under viewURI, and so
+// does the list Spotify reads, keyed by the same title the label shows.
+static NSString *uriForTab(UIView *item) {
+    if ([item respondsToSelector:@selector(uri)]) {
+        id value = nil;
+        @try {
+            value = [item valueForKey:@"uri"];
+        } @catch (NSException *exception) {
+            value = nil;
+        }
+        NSString *uri = spotifyText(value);
+        if ([uri hasPrefix:@"spotify:"]) return uri;
+    }
+    NSString * (^scan)(id) = ^NSString *(id object) {
+        NSString *held = uriHolding(object);
+        if (held) return held;
+        NSString *found = nil;
+        for (Class cls = object_getClass(object); cls && cls != NSObject.class && !found; cls = class_getSuperclass(cls)) {
+            unsigned int count = 0;
+            Ivar *ivars = class_copyIvarList(cls, &count);
+            for (unsigned int i = 0; i < count && !found; i++) {
+                const char *type = ivar_getTypeEncoding(ivars[i]);
+                if (!type || type[0] != '@') continue;
+                found = uriHolding(object_getIvar(object, ivars[i]));
+            }
+            free(ivars);
+        }
+        return found;
+    };
+    NSString *found = scan(item);
+    if (!found) {
+        for (UIView *sub in item.subviews) {
+            found = scan(sub);
+            if (found) break;
+        }
+    }
+    if (found) return found;
+    NSString *title = labelIn(item).text;
+    return title.length ? sg_uriByTitle[title] : nil;
+}
+
+static BOOL isSearchTitle(NSString *title) {
+    if (!title.length) return NO;
+    static NSSet<NSString *> *names;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        names = [NSSet setWithArray:@[
+            @"search", @"ricerca", @"cerca", @"buscar", @"suche", @"recherche", @"pesquisar",
+            @"zoeken", @"sök", @"sok", @"haku", @"søg", @"ara",
+        ]];
+    });
+    return [names containsObject:title.lowercaseString];
+}
+
+// nil when this is not Search. Otherwise what identified it, for the tab-bar log line.
+static NSString *searchKind(UIView *item) {
+    if (!item) return nil;
+    if (isSearchURI(uriForTab(item))) return @"uri";
     NSString *ident = item.accessibilityIdentifier;
-    if ([ident isEqualToString:@"TabBar.Item.Search"] || [ident hasSuffix:@".Search"]) return YES;
+    if ([ident isEqualToString:@"TabBar.Item.Search"] || [ident hasSuffix:@".Search"]) return @"id";
     id icon = encoreIconOf(iconIn(item));
     NSString *name = [icon respondsToSelector:@selector(name)] ? [icon name] : nil;
-    if (name.length && [name rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
-    // Localized titles still name the tab; a custom tab whose title happens to be Search is rare.
-    NSString *title = labelIn(item).text;
-    if (title.length && [title rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
-    return NO;
+    if (name.length && ([name rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound
+                        || [name caseInsensitiveCompare:@"find"] == NSOrderedSame)) return @"icon";
+    if (isSearchTitle(labelIn(item).text)) return @"title";
+    return nil;
+}
+
+static BOOL isSearchItem(UIView *item) {
+    return searchKind(item) != nil;
 }
 
 #pragma mark - passing a tap on
@@ -641,9 +741,10 @@ static void noteSearchRole(UITabBarController *tabs) API_AVAILABLE(ios(26.0)) {
     setProminentSearch(tabs, ident);
     BOOL prominent = ident.length && [prominentIdentifier(tabs) isEqualToString:ident];
     static NSString *last;
-    NSString *line = [NSString stringWithFormat:@"tab bar: %@, search role %@%@",
+    NSString *line = [NSString stringWithFormat:@"tab bar: %@, search role %@%@, search %@",
                       names.count ? [names componentsJoinedByString:@", "] : @"none",
-                      role ?: @"none", prominent ? @" prominent" : @""];
+                      role ?: @"none", prominent ? @" prominent" : @"",
+                      sg_searchHow ? [@"detected by " stringByAppendingString:sg_searchHow] : @"not detected"];
     if ([line isEqualToString:last]) return;
     last = [line copy];
     SGLog(@"%@", line);
@@ -983,8 +1084,14 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
     // out with the search button's metrics: image view 1x1, title the first letter. Regular tabs
     // stay in Spotify's order; Search is appended so it is the last tab. A first pass that built
     // regular tabs, before Search could be told apart, is rebuilt once it can.
-    BOOL wantSearch = NO;
-    for (UIView *source in sources) if (isSearchItem(source)) wantSearch = YES;
+    sg_searchHow = nil;
+    for (UIView *source in sources) {
+        NSString *kind = searchKind(source);
+        if (!kind) continue;
+        sg_searchHow = kind;
+        break;
+    }
+    BOOL wantSearch = sg_searchHow != nil;
     BOOL haveSearch = NO;
     for (UITab *tab in tabs.tabs) if ([tab isKindOfClass:UISearchTab.class]) haveSearch = YES;
     if (wantSearch != haveSearch || ![sources isEqualToArray:tabs.stockOrder]) {
@@ -1251,6 +1358,27 @@ static void itemDidLayOut(UIView *item) {
 }
 %end
 
+// Spotify's own tab model. The views in the row are not what carries the URI; this list is.
+// "Ricerca · spotify:find" is Search whatever the Navbar page's order is, including after Reset.
+%hook _TtC28NavigationUI_TabBarItemsImpl29TabBarItemsNavigationListImpl
+- (NSArray *)items {
+    NSArray *items = %orig;
+    if (!sg_uriByTitle) sg_uriByTitle = [NSMutableDictionary dictionary];
+    for (id item in items) {
+        id title = nil, viewURI = nil;
+        @try {
+            title = [item valueForKey:@"title"];
+            viewURI = [item valueForKey:@"viewURI"];
+        } @catch (NSException *exception) {
+            continue;
+        }
+        NSString *uri = spotifyText(viewURI);
+        if ([title isKindOfClass:NSString.class] && uri.length) sg_uriByTitle[title] = uri;
+    }
+    return items;
+}
+%end
+
 %ctor {
     if (!SGRedesignedUI()) return;
     if (@available(iOS 26.0, *)) {
@@ -1266,5 +1394,6 @@ static void itemDidLayOut(UIView *item) {
         @"_TtC25CreateMenu_TabBarItemImpl24CreateMenuTabBarItemView",
         @"_TtC23NavigationUI_TabBarImpl19TabBarContainerImpl",
         @"SPNavigationController",
+        @"_TtC28NavigationUI_TabBarItemsImpl29TabBarItemsNavigationListImpl",
     ]);
 }
