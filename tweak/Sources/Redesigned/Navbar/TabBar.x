@@ -614,9 +614,8 @@ static __weak UIScrollView *sg_pageScroll;
 // page is selected, not when a page names another one later (simulator: toggling the behaviour or an
 // appearance pass on the page do not do it), so the selection goes to another tab and back, unseen.
 static BOOL sg_flipping;
-// While an upward drag is settling the bar above the tabs, the page's scroll view is unlinked so
-// UIKit cannot keep a fractional minimize tied to the offset. nameScrollView would put it straight
-// back; it waits out that one turn.
+// While the accessory is pinned above the bar, the page's scroll view stays unlinked. Linking it
+// again before a downward drag is what put the capsule straight back inline (the offset is not 0).
 static BOOL sg_holdScrollLink;
 static void searchPageScroll(void);
 
@@ -731,16 +730,30 @@ static void nameScrollView(void) {
 
 
 @implementation SGRInlineTabs {
-    BOOL _expandHeld;
+    BOOL _placedAbove;
     BOOL _dragMayMinimize;
     CGFloat _dragAnchor;
 }
 
-// UIKit's OnScrollDown minimizes on the way down and only comes back at the top of the list
-// (iOS 26: the bar stays minimized through an upward scroll that never reaches offset 0).
-// Never puts it back now; the next downward drag arms OnScrollDown again so minimize still works.
+// UIKit's OnScrollDown minimizes on the way down and only comes back at the top of the list.
+// Switching the behavior, or putting the accessory back and linking the scroll view again on the
+// next turn, left it inline (a6c8575, 75917ec). An upward drag pins the capsule's own frame
+// above the bar and leaves the scroll view unlinked until a downward drag.
 static const CGFloat kExpandTravel = 28;
 static const CGFloat kExpandVelocity = 350;
+
+- (NSString *)accessoryTrait {
+    if (@available(iOS 26.0, *)) {
+        if (!self.bottomAccessory) return @"no-accessory";
+        return self.minimized ? @"inline" : @"expanded";
+    }
+    return @"none";
+}
+
+- (void)logDecision:(NSString *)state scroll:(UIScrollView *)scroll {
+    CGFloat offset = scroll ? [self cappedOffsetOf:scroll] : 0;
+    SGLog(@"tab bar: offset %.0f trait %@ state %@", offset, [self accessoryTrait], state);
+}
 
 - (CGFloat)cappedOffsetOf:(UIScrollView *)scroll {
     CGFloat top = -scroll.adjustedContentInset.top;
@@ -752,55 +765,65 @@ static const CGFloat kExpandVelocity = 350;
     return y;
 }
 
-- (void)expandForPartialDrag {
+// The glass around the mini player, not an ancestor as wide as the tab row.
+- (UIView *)accessoryCapsule {
     if (@available(iOS 26.0, *)) {
-        if (!self.minimized) return;
-        _expandHeld = YES;
-        if (self.tabBarMinimizeBehavior == UITabBarMinimizeBehaviorNever) return;
-        self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorNever;
-        SGLog(@"tab bar: expands on a partial upward drag");
+        UIView *mini = self.bottomAccessory.contentView;
+        if (!mini.superview) return nil;
+        UIView *capsule = mini;
+        for (UIView *v = mini.superview; v && v != self.view; v = v.superview) {
+            CGFloat dw = v.bounds.size.width - mini.bounds.size.width;
+            CGFloat dh = fabs(v.bounds.size.height - mini.bounds.size.height);
+            if (dh >= 28 || dw < -12 || dw > 80) break;
+            capsule = v;
+        }
+        return capsule;
     }
+    return nil;
 }
 
-// OnScrollDown only finishes the expand when the offset is back at the top, and switching the
-// behavior to Never leaves a drag that ended partway sitting between the inline slot and the slot
-// above the bar. Unlinking the scroll view drops that fractional progress; Never then keeps the
-// accessory up. The link comes back on the next turn so a later downward drag can still minimize.
-- (void)settleAboveBar {
+- (void)pinAccessoryFrame {
+    if (!_placedAbove) return;
+    static BOOL pinning;
+    if (pinning) return;
+    UIView *capsule = [self accessoryCapsule];
+    if (!capsule.superview || !self.tabBar.window) return;
+    CGRect bar = [self.tabBar convertRect:self.tabBar.bounds toView:capsule.superview];
+    CGRect frame = capsule.frame;
+    CGFloat overflow = CGRectGetMaxY(frame) - (CGRectGetMinY(bar) - 8);
+    if (overflow <= 1) return;
+    frame.origin.y -= overflow;
+    pinning = YES;
+    capsule.frame = frame;
+    pinning = NO;
+}
+
+// Never and an unlinked scroll view keep UIKit from driving the capsule. The frame is ours until
+// a downward drag. The accessory is not removed and put back, and the link is not restored here.
+- (void)pinAbove:(UIScrollView *)scroll {
     if (@available(iOS 26.0, *)) {
         if (!self.bottomAccessory) return;
-        BOOL needMove = self.minimized || [self accessoryIsPartway];
-        _expandHeld = YES;
+        BOOL was = _placedAbove;
+        _placedAbove = YES;
         self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorNever;
-        if (!needMove) {
-            SGLog(@"tab bar: stays above the bar");
-            return;
-        }
         UIViewController *page = self.selectedViewController;
-        UIScrollView *scroll = sg_pageScroll;
+        if (!scroll) scroll = sg_pageScroll;
         if (!scroll) scroll = [page contentScrollViewForEdge:NSDirectionalRectEdgeBottom];
         if (page && scroll) {
             sg_holdScrollLink = YES;
             [page setContentScrollView:nil forEdge:NSDirectionalRectEdgeAll];
         }
-        SGLog(@"tab bar: settles above the bar (minimized %d)", self.minimized);
-        __weak typeof(self) weakSelf = self;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            SGRInlineTabs *strong = weakSelf;
-            if (!strong) {
-                sg_holdScrollLink = NO;
-                return;
-            }
-            if (strong.minimized && strong.bottomAccessory) {
-                UITabAccessory *accessory = strong.bottomAccessory;
-                [strong setBottomAccessory:nil animated:NO];
-                [strong setBottomAccessory:accessory animated:YES];
-                SGLog(@"tab bar: accessory put back above the bar");
-            }
-            sg_holdScrollLink = NO;
-            if (strong->_expandHeld && page && scroll) [page setContentScrollView:scroll forEdge:NSDirectionalRectEdgeAll];
-        });
+        [self pinAccessoryFrame];
+        if (!was) [self logDecision:@"pinned-above" scroll:scroll];
     }
+}
+
+- (void)expandForPartialDrag {
+    [self pinAbove:sg_pageScroll];
+}
+
+- (void)settleAboveBar {
+    [self pinAbove:sg_pageScroll];
 }
 
 // Straddling the top of the tab bar: not in the slot above it, and not in the inline slot.
@@ -817,26 +840,26 @@ static const CGFloat kExpandVelocity = 350;
     return NO;
 }
 
-- (void)armMinimizeAfterExpand {
-    if (!_expandHeld) return;
-    _expandHeld = NO;
-    if (@available(iOS 26.0, *)) {
-        if (self.tabBarMinimizeBehavior == UITabBarMinimizeBehaviorOnScrollDown) return;
+- (void)armMinimizeAfterExpand:(UIScrollView *)scroll {
+    if (!_placedAbove) return;
+    _placedAbove = NO;
+    sg_holdScrollLink = NO;
+    if (@available(iOS 26.0, *))
         self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
-        SGLog(@"tab bar: a downward drag may minimize again");
-    }
+    nameScrollView();
+    [self logDecision:@"minimize-armed" scroll:scroll ?: sg_pageScroll];
 }
 
 - (void)notePageDrag:(UIPanGestureRecognizer *)pan {
     UIScrollView *scroll = (UIScrollView *)pan.view;
     if (![scroll isKindOfClass:UIScrollView.class]) return;
     if (pan.state == UIGestureRecognizerStateBegan) {
-        _dragMayMinimize = _expandHeld;
+        _dragMayMinimize = _placedAbove;
         _dragAnchor = [self cappedOffsetOf:scroll];
-        // Arm minimize at the start of a downward flick so that drag still minimizes, the way it
-        // did before an early expand switched the behavior to Never.
         CGPoint velocity = [pan velocityInView:scroll];
-        if (_dragMayMinimize && velocity.y < -80 && fabs(velocity.y) > fabs(velocity.x)) [self armMinimizeAfterExpand];
+        // A downward flick releases the pin at the start, so this drag can still minimize.
+        if (_dragMayMinimize && velocity.y < -80 && fabs(velocity.y) > fabs(velocity.x)) [self armMinimizeAfterExpand:scroll];
+        else [self logDecision:_placedAbove ? @"pinned-above" : @"uikit" scroll:scroll];
         return;
     }
     CGFloat dy = [self cappedOffsetOf:scroll] - _dragAnchor;
@@ -850,13 +873,14 @@ static const CGFloat kExpandVelocity = 350;
         BOOL downward = dy > 8 || (vertical && velocity.y < -120);
         // A downward drag is left to minimize. An upward one, or a finger lifted while the capsule
         // is between the two slots, snaps it above the bar instead of leaving it halfway.
-        if (upward || ([self accessoryIsPartway] && !downward)) [self settleAboveBar];
-        else if (_dragMayMinimize && (dy > 8 || (vertical && velocity.y < -kExpandVelocity))) [self armMinimizeAfterExpand];
+        if (upward || ([self accessoryIsPartway] && !downward)) [self pinAbove:scroll];
+        else if (_placedAbove && downward) [self armMinimizeAfterExpand:scroll];
+        else [self logDecision:_placedAbove ? @"pinned-above" : @"uikit" scroll:scroll];
         return;
     }
     if (pan.state != UIGestureRecognizerStateChanged) return;
-    if (pulledUp || flungUp) [self expandForPartialDrag];
-    if (_dragMayMinimize && (dy > 8 || (vertical && velocity.y < -kExpandVelocity))) [self armMinimizeAfterExpand];
+    if (pulledUp || flungUp) [self pinAbove:scroll];
+    if (_placedAbove && _dragMayMinimize && (dy > 8 || (vertical && velocity.y < -kExpandVelocity))) [self armMinimizeAfterExpand:scroll];
 }
 
 - (instancetype)init {
@@ -893,6 +917,7 @@ static const CGFloat kExpandVelocity = 350;
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     static BOOL fitting;
+    if (!fitting && _placedAbove) [self pinAccessoryFrame];
     if (fitting) return;
     NSUInteger count = self.sources.count;
     CGFloat full = self.view.bounds.size.width;
