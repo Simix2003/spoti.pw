@@ -30,6 +30,14 @@ static BOOL sg_inline;                     // see "the tab bar with the mini pla
 static NSUInteger sg_slotCount;
 static CGFloat sg_slotWidth;
 
+// UIKit's OnScrollDown minimizes as the list leaves the top and expands again at the top, or when
+// the minimized bar is tapped. NO means nothing switches tabBarMinimizeBehavior or removes the accessory.
+static const BOOL kScrollUpRestore = NO;
+// YES runs the platter slide, itemWidth and title-shortening passes. NO leaves the bar to UIKit:
+// regular tabs in the leading platter, Search in the trailing circle because it is a UISearchTab
+// placed last. The last leading tab was the one our width pass clipped (icon gone, title "L").
+static const BOOL kNavbarCustomLayout = NO;
+
 static void noteTabSlot(CGFloat fullWidth, NSUInteger count) {
     if (count < 2 || fullWidth < 80 || count < sg_slotCount) return;
     sg_slotCount = count;
@@ -577,12 +585,17 @@ static void syncBar(UIView *stockBar) {
     CGFloat height = MAX(bounds.size.height, glassHeight(bar, stockBar));
     CGRect frame = CGRectMake(0, CGRectGetMaxY(bounds) - height, width, height);
     if (!CGRectEqualToRect(host.frame, frame)) host.frame = frame;
-    noteTabSlot(width, sources.count);
-    CGFloat fit = fittedTabWidth(sources.count, width);
-    if (sg_slotWidth > 1 && fabs(bar.itemWidth - sg_slotWidth) > 0.5) bar.itemWidth = sg_slotWidth;
-    CGRect barFrame = CGRectMake(round((width - fit) / 2), 0, fit, host.bounds.size.height);
-    if (!CGRectEqualToRect(bar.frame, barFrame)) bar.frame = barFrame;
-    logTabFit(sources.count, width, fit, @"bar");
+    if (kNavbarCustomLayout) {
+        noteTabSlot(width, sources.count);
+        CGFloat fit = fittedTabWidth(sources.count, width);
+        if (sg_slotWidth > 1 && fabs(bar.itemWidth - sg_slotWidth) > 0.5) bar.itemWidth = sg_slotWidth;
+        CGRect barFrame = CGRectMake(round((width - fit) / 2), 0, fit, host.bounds.size.height);
+        if (!CGRectEqualToRect(bar.frame, barFrame)) bar.frame = barFrame;
+        logTabFit(sources.count, width, fit, @"bar");
+    } else {
+        CGRect barFrame = CGRectMake(0, 0, width, host.bounds.size.height);
+        if (!CGRectEqualToRect(bar.frame, barFrame)) bar.frame = barFrame;
+    }
     if (host.superview != stockBar) [stockBar addSubview:host];
     else if (stockBar.subviews.lastObject != host) [stockBar bringSubviewToFront:host];
     logBarOnce(bar);
@@ -616,18 +629,14 @@ static void syncBar(UIView *stockBar) {
 
 @interface SGRInlineTabs : UITabBarController <UITabBarControllerDelegate, UIGestureRecognizerDelegate, SGPlayerStateObserver>
 @property (nonatomic, weak) UIView *stockBar;
+// Spotify's row, in its own order. `sources` is the same tabs with Search moved last so it lines
+// up with `tabs` (UISearchTab is the trailing circle only when it is the last tab).
+@property (nonatomic, copy) NSArray<UIView *> *stockOrder;
 @property (nonatomic, copy) NSArray<UIView *> *sources;
 @property (nonatomic, strong) UITabAccessory *accessory API_AVAILABLE(ios(26.0));
 @property (nonatomic) BOOL holding;
 @property (nonatomic, readonly) BOOL minimized;
-// An upward drag committed early: behavior stays Never until a later downward drag.
-- (void)notePageDrag:(UIPanGestureRecognizer *)pan;
-- (void)noteContentOffsetFrom:(CGFloat)from to:(CGFloat)to scroll:(UIScrollView *)scroll;
-- (void)expandForPartialDrag;
-- (void)settleAboveBar;
-- (void)minimizeFromCapsule;
-// Pins the regular tabs to the leading edge at the width they have when every tab is showing,
-// and the search circle to the trailing edge. UIKit's own pass stretches a shorter set.
+// Slides the leading platter when kNavbarCustomLayout is on. With it off this does not run.
 - (void)placeLeadingCluster;
 // The last touch on the bar went down on the minimized leading tab, and its tap went to the first tab
 // while UIKit selects the one under it.
@@ -791,21 +800,7 @@ static void nameScrollView(void) {
 @end
 
 
-@implementation SGRInlineTabs {
-    BOOL _forcedExpanded;
-    BOOL _dragMayMinimize;
-    CGFloat _dragAnchor;
-    CGFloat _upAccum, _downAccum;
-    CFTimeInterval _offsetSampleAt, _expandedAt;
-}
-
-// UIKit's OnScrollDown minimizes as the list leaves the top and expands again near offset 0, which is
-// also what Apple Music does. The block below is the optional scroll-up restore: one constant.
-// NO leaves the accessory and the minimize behavior entirely to UIKit (expand at the top, or tap the
-// minimized bar). Nothing in that mode removes the accessory or switches the behavior.
-static const BOOL kScrollUpRestore = YES;
-static const CGFloat kExpandTravel = 8;
-static const CGFloat kExpandVelocity = 120;
+@implementation SGRInlineTabs
 
 - (NSString *)accessoryTrait {
     if (@available(iOS 26.0, *)) {
@@ -813,144 +808,6 @@ static const CGFloat kExpandVelocity = 120;
         return self.minimized ? @"inline" : @"expanded";
     }
     return @"none";
-}
-
-- (void)logDecision:(NSString *)state scroll:(UIScrollView *)scroll {
-    CGFloat offset = scroll ? [self cappedOffsetOf:scroll] : 0;
-    SGLog(@"tab bar: offset %.0f trait %@ state %@", offset, [self accessoryTrait], state);
-}
-
-- (CGFloat)cappedOffsetOf:(UIScrollView *)scroll {
-    CGFloat top = -scroll.adjustedContentInset.top;
-    CGFloat span = scroll.contentSize.height + scroll.adjustedContentInset.bottom - scroll.bounds.size.height;
-    CGFloat maxOffset = span > top ? span : top;
-    CGFloat y = scroll.contentOffset.y;
-    // Past the end is the bottom bounce, which is not an upward scroll.
-    if (y > maxOffset) y = maxOffset;
-    return y;
-}
-
-// Spotify rests at -adjustedContentInset.top. UIKit only treats offset 0 as the top, so a list
-// sitting at -116 stays inline (device log, 2026-09-30).
-- (BOOL)atVisualTop:(UIScrollView *)scroll {
-    if (!scroll) return NO;
-    CGFloat top = -scroll.adjustedContentInset.top;
-    return [self cappedOffsetOf:scroll] <= top + 8;
-}
-
-static BOOL sg_selectorInteresting(NSString *name) {
-    NSString *lower = name.lowercaseString;
-    return [lower containsString:@"minimi"] || [lower containsString:@"expand"] || [lower containsString:@"collapse"]
-        || [lower containsString:@"inline"] || [lower containsString:@"accessory"];
-}
-
-static BOOL sg_selectorCallable(NSString *name) {
-    NSString *lower = name.lowercaseString;
-    return [lower containsString:@"minimi"] && [lower containsString:@"animated"] && [lower containsString:@"tabbar"];
-}
-
-static void sg_logMethods(id object, NSMutableString *out, NSUInteger *shown, NSMutableArray<NSString *> *callable) {
-    if (!object || *shown >= 80) return;
-    Class cls = object_getClass(object);
-    NSString *className = cls ? NSStringFromClass(cls) : @"?";
-    [out appendFormat:@"\n%@:", className];
-    unsigned count = 0;
-    Method *methods = class_copyMethodList(cls, &count);
-    NSUInteger hits = 0;
-    for (unsigned i = 0; methods && i < count && *shown < 80; i++) {
-        SEL sel = method_getName(methods[i]);
-        NSString *name = sel ? NSStringFromSelector(sel) : nil;
-        if (!sg_selectorInteresting(name)) continue;
-        unsigned args = method_getNumberOfArguments(methods[i]);
-        [out appendFormat:@"\n  %@ args %u", name, args];
-        (*shown)++;
-        hits++;
-        if (sg_selectorCallable(name) && args == 4 && callable.count < 4) {
-            [callable addObject:[NSString stringWithFormat:@"%@ %@", className, name]];
-        }
-    }
-    free(methods);
-    if (!hits) [out appendString:@" (none)"];
-}
-
-static id sg_ivarObject(id object, NSString *needle) {
-    Class cls = object ? object_getClass(object) : Nil;
-    NSUInteger level = 0;
-    while (cls && cls != NSObject.class && level++ < 6) {
-        unsigned count = 0;
-        Ivar *ivars = class_copyIvarList(cls, &count);
-        id found = nil;
-        for (unsigned i = 0; ivars && i < count; i++) {
-            const char *raw = ivar_getName(ivars[i]);
-            const char *type = ivar_getTypeEncoding(ivars[i]);
-            if (!raw || !type || type[0] != '@') continue;
-            if (![[@(raw) lowercaseString] containsString:needle]) continue;
-            @try { found = object_getIvar(object, ivars[i]); }
-            @catch (NSException *ex) { found = nil; }
-            if (found) break;
-        }
-        free(ivars);
-        if (found) return found;
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
-
-static NSArray<NSString *> *sg_expandSelectors;
-static BOOL sg_selectorsLogged, sg_hostLogged;
-
-static void sg_logMinimizeSelectors(SGRInlineTabs *tabs) {
-    if (!tabs) return;
-    id accessoryHost = nil;
-    if (@available(iOS 26.0, *)) accessoryHost = tabs.bottomAccessory.contentView.superview;
-    if (sg_selectorsLogged && (sg_hostLogged || !accessoryHost)) return;
-    NSMutableString *out = [NSMutableString stringWithString:sg_selectorsLogged ? @"tab bar selectors host" : @"tab bar selectors"];
-    NSMutableArray<NSString *> *callable = [NSMutableArray arrayWithArray:sg_expandSelectors ?: @[]];
-    NSUInteger shown = 0;
-    if (!sg_selectorsLogged) {
-        sg_logMethods(tabs, out, &shown, callable);
-        id style = sg_ivarObject(tabs, @"visual");
-        if (!style) style = sg_ivarObject(tabs, @"style");
-        if (style && style != tabs) sg_logMethods(style, out, &shown, callable);
-        UIView *bar = tabs.tabBar;
-        if (bar) sg_logMethods(bar, out, &shown, callable);
-        sg_selectorsLogged = YES;
-    }
-    if (accessoryHost && !sg_hostLogged) {
-        sg_logMethods(accessoryHost, out, &shown, callable);
-        sg_hostLogged = YES;
-    }
-    sg_expandSelectors = [callable copy];
-    SGLogLong(@"navbar", out);
-    SGLog(@"tab bar: private expand candidates %lu", (unsigned long)sg_expandSelectors.count);
-}
-
-- (BOOL)tryPrivateMinimized:(BOOL)minimized {
-    sg_logMinimizeSelectors(self);
-    if (!sg_expandSelectors.count) return NO;
-    for (NSString *item in sg_expandSelectors) {
-        NSArray<NSString *> *parts = [item componentsSeparatedByString:@" "];
-        if (parts.count < 2) continue;
-        NSString *selName = [[parts subarrayWithRange:NSMakeRange(1, parts.count - 1)] componentsJoinedByString:@" "];
-        SEL sel = NSSelectorFromString(selName);
-        id targets[2] = { self, nil };
-        targets[1] = sg_ivarObject(self, @"visual") ?: sg_ivarObject(self, @"style");
-        for (int i = 0; i < 2; i++) {
-            id target = targets[i];
-            if (!target || ![target respondsToSelector:sel]) continue;
-            NSString *className = NSStringFromClass(object_getClass(target));
-            if (![item hasPrefix:className]) continue;
-            SGLog(@"tab bar: trying private %@ %@", className, selName);
-            @try {
-                ((void (*)(id, SEL, BOOL, BOOL))objc_msgSend)(target, sel, minimized, YES);
-            } @catch (NSException *ex) {
-                SGLog(@"tab bar: private %@ threw %@", selName, ex.name);
-                return NO;
-            }
-            return YES;
-        }
-    }
-    return NO;
 }
 
 - (void)logAccessoryFrame:(NSString *)when {
@@ -965,201 +822,6 @@ static void sg_logMinimizeSelectors(SGRInlineTabs *tabs) {
     }
 }
 
-- (void)logContentScroll:(NSString *)when scroll:(UIScrollView *)scroll {
-    UIViewController *page = self.selectedViewController;
-    UIScrollView *named = page ? [page contentScrollViewForEdge:NSDirectionalRectEdgeBottom] : nil;
-    UIScrollView *shown = scroll ?: sg_pageScroll;
-    static NSUInteger logged;
-    if (logged++ > 10 && ![when isEqualToString:@"expand"]) return;
-    SGLog(@"tab bar: content scroll %@ page %@ named %@ followed %@",
-          when,
-          page ? NSStringFromClass(page.class) : @"none",
-          named ? NSStringFromClass(named.class) : @"none",
-          shown ? NSStringFromClass(shown.class) : @"none");
-}
-
-// A small scroll up expands by UIKit's own minimize behavior, inside a spring, with the accessory
-// left in the hierarchy. Taking it off and putting it back is what popped the player above the bar.
-- (void)expandAboveBar:(NSString *)why scroll:(UIScrollView *)scroll {
-    if (!kScrollUpRestore) return;
-    if (@available(iOS 26.0, *)) {
-        if (!self.bottomAccessory) {
-            SGLog(@"tab bar: expand skipped, no accessory (%@)", why);
-            return;
-        }
-        if (!self.minimized && !_forcedExpanded) {
-            [self logDecision:@"already-expanded" scroll:scroll];
-            return;
-        }
-        if (_forcedExpanded) return;
-        _forcedExpanded = YES;
-        _expandedAt = CACurrentMediaTime();
-        [self logAccessoryFrame:@"before expand"];
-        [self logContentScroll:@"expand" scroll:scroll];
-        BOOL priv = [self tryPrivateMinimized:NO];
-        [UIView animateWithDuration:0.42 delay:0 usingSpringWithDamping:0.9 initialSpringVelocity:0.35 options:UIViewAnimationOptionAllowUserInteraction | UIViewAnimationOptionBeginFromCurrentState animations:^{
-            self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorNever;
-        } completion:nil];
-        [self logDecision:[@"expanded " stringByAppendingString:why] scroll:scroll];
-        SGLog(@"tab bar: expand behavior Never%@ (%@)", priv ? @" after private" : @" spring 0.42", why);
-        __weak typeof(self) weakSelf = self;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.48 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            SGRInlineTabs *later = weakSelf;
-            if (!later) return;
-            [later logAccessoryFrame:[NSString stringWithFormat:@"after expand (%@)", why]];
-            if (later.minimized) SGLog(@"tab bar: expand left the accessory inline (%@)", why);
-        });
-    }
-}
-
-- (void)expandForPartialDrag {
-    [self expandAboveBar:@"partial drag" scroll:sg_pageScroll];
-}
-
-- (void)settleAboveBar {
-    [self expandAboveBar:@"capsule" scroll:sg_pageScroll];
-}
-
-// A downward swipe on the capsule. The page list is what UIKit minimizes from, and that swipe
-// never reaches it. When we are holding the capsule up, hand the list back. When UIKit is
-// already driving and the list is at its visual top, scroll it just far enough to minimize.
-- (void)minimizeFromCapsule {
-    UIScrollView *scroll = sg_pageScroll;
-    if (self.minimized && !_forcedExpanded) {
-        SGLog(@"tab bar: capsule swipe down ignored, already inline");
-        return;
-    }
-    if (_forcedExpanded) {
-        [self armMinimizeAfterExpand:@"capsule swipe down" scroll:scroll];
-        return;
-    }
-    if (scroll) {
-        CGFloat top = -scroll.adjustedContentInset.top;
-        CGFloat y = scroll.contentOffset.y;
-        if (y < top + 48) {
-            CGFloat dest = top + 80;
-            SGLog(@"tab bar: capsule swipe down scrolls the list from %.0f to %.0f so UIKit minimizes", y, dest);
-            [scroll setContentOffset:CGPointMake(scroll.contentOffset.x, dest) animated:YES];
-            return;
-        }
-        SGLog(@"tab bar: capsule swipe down, list already at %.0f, UIKit is armed again", y);
-        if (@available(iOS 26.0, *))
-            self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
-        nameScrollView();
-        return;
-    }
-    SGLog(@"tab bar: capsule swipe down, no page list to minimize by");
-}
-
-// Hands the capsule back to UIKit. OnScrollDown minimizes once the list is not at the top.
-// The accessory stays put; only the behavior changes, inside the same spring as the expand.
-- (void)armMinimizeAfterExpand:(NSString *)why scroll:(UIScrollView *)scroll {
-    if (!kScrollUpRestore) {
-        _forcedExpanded = NO;
-        return;
-    }
-    if (!_forcedExpanded) {
-        [self logDecision:@"uikit" scroll:scroll ?: sg_pageScroll];
-        return;
-    }
-    _forcedExpanded = NO;
-    [self logAccessoryFrame:@"before minimize"];
-    if (@available(iOS 26.0, *)) {
-        [UIView animateWithDuration:0.42 delay:0 usingSpringWithDamping:0.9 initialSpringVelocity:0.35 options:UIViewAnimationOptionAllowUserInteraction | UIViewAnimationOptionBeginFromCurrentState animations:^{
-            self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
-        } completion:nil];
-    }
-    nameScrollView();
-    [self logDecision:[@"minimize-armed " stringByAppendingString:why] scroll:scroll ?: sg_pageScroll];
-    SGLog(@"tab bar: minimize behavior OnScrollDown spring 0.42 (%@)", why);
-    __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.48 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        SGRInlineTabs *later = weakSelf;
-        if (!later) return;
-        [later logAccessoryFrame:[NSString stringWithFormat:@"after minimize (%@)", why]];
-    });
-}
-
-// Any upward movement of the page list, including deceleration after the finger has lifted.
-// The pan recognizer on that list is not enough: Spotify often changes contentOffset on a view
-// whose pan we are not observing, and UIKit's OnScrollDown only expands at offset 0.
-- (CGFloat)capOffset:(CGFloat)y scroll:(UIScrollView *)scroll {
-    CGFloat top = -scroll.adjustedContentInset.top;
-    CGFloat span = scroll.contentSize.height + scroll.adjustedContentInset.bottom - scroll.bounds.size.height;
-    CGFloat maxOffset = span > top ? span : top;
-    if (y > maxOffset) y = maxOffset;
-    return y;
-}
-
-- (void)noteContentOffsetFrom:(CGFloat)from to:(CGFloat)to scroll:(UIScrollView *)scroll {
-    if (!scroll) return;
-    CFTimeInterval now = CACurrentMediaTime();
-    if (now - _offsetSampleAt > 0.45) {
-        _upAccum = 0;
-        _downAccum = 0;
-    }
-    _offsetSampleAt = now;
-    CGFloat dy = [self capOffset:to scroll:scroll] - [self capOffset:from scroll:scroll];
-    if (dy < -0.5) {
-        _upAccum += -dy;
-        _downAccum = 0;
-    } else if (dy > 0.5) {
-        _downAccum += dy;
-        _upAccum = 0;
-    } else {
-        return;
-    }
-    if (kScrollUpRestore && self.minimized && !_forcedExpanded && _upAccum >= kExpandTravel) {
-        SGLog(@"tab bar: scroll up %.0fpt (offset %.0f -> %.0f), expanding", _upAccum, from, to);
-        _upAccum = 0;
-        [self expandAboveBar:@"scroll up" scroll:scroll];
-    } else if (kScrollUpRestore && _forcedExpanded && _downAccum >= 16 && now - _expandedAt > 0.35) {
-        SGLog(@"tab bar: scroll down %.0fpt (offset %.0f -> %.0f), arming minimize", _downAccum, from, to);
-        _downAccum = 0;
-        [self armMinimizeAfterExpand:@"scroll down" scroll:scroll];
-    }
-}
-
-- (void)notePageDrag:(UIPanGestureRecognizer *)pan {
-    UIScrollView *scroll = (UIScrollView *)pan.view;
-    if (![scroll isKindOfClass:UIScrollView.class]) return;
-    if (pan.state == UIGestureRecognizerStateBegan) {
-        sg_dragActive = YES;
-        _dragMayMinimize = _forcedExpanded || !self.minimized;
-        _dragAnchor = [self cappedOffsetOf:scroll];
-        CGPoint velocity = [pan velocityInView:scroll];
-        BOOL vertical = fabs(velocity.y) >= fabs(velocity.x);
-        // Already on the visual top, still inline: UIKit will not expand this. A finger that is
-        // leaving the top (scrolling the list down) is left to UIKit.
-        if (kScrollUpRestore && self.minimized && [self atVisualTop:scroll] && !(vertical && velocity.y < -40)) {
-            [self expandAboveBar:@"already at the top" scroll:scroll];
-            return;
-        }
-        // A downward flick while we are holding the capsule up lets this drag minimize.
-        if (_forcedExpanded && vertical && velocity.y < -80) [self armMinimizeAfterExpand:@"flick down" scroll:scroll];
-        else [self logDecision:_forcedExpanded ? @"expanded-held" : @"uikit" scroll:scroll];
-        return;
-    }
-    CGFloat dy = [self cappedOffsetOf:scroll] - _dragAnchor;
-    CGPoint velocity = [pan velocityInView:scroll];
-    BOOL vertical = fabs(velocity.y) >= fabs(velocity.x);
-    // Finger moving down scrolls toward the top: dy goes negative, velocity.y is positive.
-    BOOL towardTop = dy < -kExpandTravel || (vertical && velocity.y > kExpandVelocity && dy < -8)
-        || ([self atVisualTop:scroll] && dy <= 0);
-    BOOL towardBottom = dy > kExpandTravel || (vertical && velocity.y < -kExpandVelocity && dy > 8);
-    if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled) {
-        sg_dragActive = NO;
-        BOOL upward = dy < -8 || (vertical && velocity.y > 120);
-        BOOL downward = dy > 8 || (vertical && velocity.y < -120);
-        if (kScrollUpRestore && self.minimized && (towardTop || upward)) [self expandAboveBar:upward ? @"swipe up" : @"toward the top" scroll:scroll];
-        else if (kScrollUpRestore && _dragMayMinimize && _forcedExpanded && (towardBottom || downward)) [self armMinimizeAfterExpand:@"swipe down" scroll:scroll];
-        else [self logDecision:_forcedExpanded ? @"expanded-held" : @"uikit" scroll:scroll];
-        return;
-    }
-    if (pan.state != UIGestureRecognizerStateChanged) return;
-    if (kScrollUpRestore && self.minimized && towardTop) [self expandAboveBar:@"swipe up" scroll:scroll];
-    else if (kScrollUpRestore && _dragMayMinimize && _forcedExpanded && towardBottom) [self armMinimizeAfterExpand:@"swipe down" scroll:scroll];
-}
 
 - (instancetype)init {
     if (!(self = [super init])) return nil;
@@ -1187,11 +849,7 @@ static void sg_logMinimizeSelectors(SGRInlineTabs *tabs) {
     tap.cancelsTouchesInView = NO;
     [self.tabBar addGestureRecognizer:tap];
     [self playerStateDidChange:SGPlayerState()];
-    __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        SGLog(@"tab bar: scroll-up restore %@", kScrollUpRestore ? @"on" : @"off");
-        if (kScrollUpRestore) sg_logMinimizeSelectors(weakSelf);
-    });
+    SGLog(@"tab bar: custom layout %@, scroll-up restore %@", kNavbarCustomLayout ? @"on" : @"off", kScrollUpRestore ? @"on" : @"off");
 }
 
 // iOS 26 draws the regular tabs in one liquid-glass platter and the search tab in another.
@@ -1318,10 +976,109 @@ static void logPlatterButtons(UIView *platter) {
     SGLog(@"%@", out);
 }
 
+static void sg_describeButton(UIView *button, NSMutableString *out, NSString *shell, NSUInteger index) {
+    UIImageView *imageView = nil;
+    UILabel *label = nil;
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:button];
+    while (stack.count) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        if (!imageView && [view isKindOfClass:UIImageView.class]) imageView = (UIImageView *)view;
+        if (!label && [view isKindOfClass:UILabel.class] && ((UILabel *)view).text.length) label = (UILabel *)view;
+        if (view != button && isTabButton(view)) continue;
+        for (UIView *sub in view.subviews) [stack addObject:sub];
+    }
+    UIImage *image = imageView.image;
+    [out appendFormat:@"\n  %@ %lu \"%@\" button %@ alpha %.2f hidden %d image %@ alpha %.2f hidden %d img %.0fx%.0f label %@ \"%@\" alpha %.2f hidden %d",
+        shell, (unsigned long)index, label.text ?: @"",
+        NSStringFromCGRect(button.frame), button.alpha, button.hidden,
+        imageView ? NSStringFromCGRect(imageView.frame) : @"none",
+        imageView ? imageView.alpha : 0, imageView ? imageView.hidden : 1,
+        image.size.width, image.size.height,
+        label ? NSStringFromCGRect(label.frame) : @"none", label.text ?: @"",
+        label ? label.alpha : 0, label ? label.hidden : 1];
+}
+
+// Once per distinct layout, capped. ContentView and SelectedContentView each keep their own
+// _UITabButton copies; the last leading tab was the one whose image collapsed to 1x1.
+static void sg_logLeadingTabs(SGRInlineTabs *tabs) {
+    UITabBar *bar = tabs.tabBar;
+    if (!bar || bar.bounds.size.width < 80) return;
+    NSMutableString *out = [NSMutableString stringWithFormat:@"tab bar leading custom %d", kNavbarCustomLayout];
+    if (@available(iOS 26.0, *)) {
+        [out appendString:@"\n  model"];
+        NSUInteger i = 0;
+        for (UITab *tab in tabs.tabs) {
+            BOOL hidden = NO;
+            if ([tab respondsToSelector:@selector(isHidden)])
+                hidden = ((BOOL (*)(id, SEL))objc_msgSend)(tab, @selector(isHidden));
+            [out appendFormat:@" [%lu \"%@\" hidden %d%@]", (unsigned long)i, tab.title ?: @"", hidden,
+                [tab isKindOfClass:UISearchTab.class] ? @" search" : @""];
+            i++;
+        }
+    }
+    NSMutableArray<UIView *> *platters = [NSMutableArray array];
+    collectPlatters(bar, platters, 0);
+    UIView *tabsPlatter = nil;
+    CGFloat best = 0;
+    for (UIView *platter in platters) {
+        CGRect rect = [platter convertRect:platter.bounds toView:bar];
+        BOOL square = rect.size.width < 110 && rect.size.width <= rect.size.height * 1.5;
+        if (square || rect.size.width <= best) continue;
+        best = rect.size.width;
+        tabsPlatter = platter;
+    }
+    if (!tabsPlatter) {
+        [out appendString:@"\n  no leading platter"];
+    } else {
+        NSMutableArray<UIView *> *shells = [NSMutableArray array];
+        NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:tabsPlatter];
+        while (stack.count) {
+            UIView *view = stack.lastObject;
+            [stack removeLastObject];
+            NSString *name = NSStringFromClass(view.class);
+            if (view != tabsPlatter && ([name containsString:@"SelectedContentView"] || [name containsString:@"ContentView"])) {
+                [shells addObject:view];
+                continue;
+            }
+            for (UIView *sub in view.subviews) [stack addObject:sub];
+        }
+        for (UIView *shell in shells) {
+            NSString *kind = [NSStringFromClass(shell.class) containsString:@"SelectedContent"] ? @"selected" : @"content";
+            NSMutableArray<UIView *> *buttons = [NSMutableArray array];
+            NSMutableArray<UIView *> *walk = [NSMutableArray arrayWithObject:shell];
+            while (walk.count) {
+                UIView *view = walk.lastObject;
+                [walk removeLastObject];
+                if (view != shell && isTabButton(view)) {
+                    [buttons addObject:view];
+                    continue;
+                }
+                for (UIView *sub in view.subviews) [walk addObject:sub];
+            }
+            [buttons sortUsingComparator:^NSComparisonResult(UIView *a, UIView *b) {
+                if (a.frame.origin.x < b.frame.origin.x) return NSOrderedAscending;
+                if (a.frame.origin.x > b.frame.origin.x) return NSOrderedDescending;
+                return NSOrderedSame;
+            }];
+            if (!buttons.count) [out appendFormat:@"\n  %@ (no buttons)", kind];
+            for (NSUInteger i = 0; i < buttons.count; i++) sg_describeButton(buttons[i], out, kind, i);
+        }
+    }
+    static NSString *last;
+    static NSUInteger logged;
+    if ([out isEqualToString:last] || logged >= 20) return;
+    logged++;
+    last = [out copy];
+    SGLogLong(@"navbar", out);
+}
+
 // Search stays in its own circle. The leading platter is only slid to the leading margin; its
 // buttons are UIKit's, at the item width set before this layout. Their frames are not written.
+// With kNavbarCustomLayout off this never runs: writing the platter's frame is what clipped the
+// last leading tab down to its first letter.
 - (void)placeLeadingCluster {
-    if (self.minimized) return;
+    if (!kNavbarCustomLayout || self.minimized) return;
     UITabBar *bar = self.tabBar;
     CGFloat barW = bar.bounds.size.width;
     if (barW < 80 || self.sources.count < 2) return;
@@ -1418,6 +1175,10 @@ static void logPlatterButtons(UIView *platter) {
 
 - (void)viewDidLayoutSubviews {
     UITabBar *bar = self.tabBar;
+    if (!kNavbarCustomLayout) {
+        [super viewDidLayoutSubviews];
+        return;
+    }
     // Width of one tab, not of the bar. fullWidth/count stretched two tabs across the gap Create
     // left. Zero let UIKit share that gap with the hidden tab and clip "La tua libreria" to "L".
     if (!self.minimized) {
@@ -1473,7 +1234,6 @@ static void logPlatterButtons(UIView *platter) {
 // A tap on the minimized selected tab only expands the bar, with no shouldSelectTab.
 - (void)leadingTapped:(UITapGestureRecognizer *)tap {
     SGLog(@"tab bar: the minimized leading tab takes the tap for %@", labelIn(self.sources.firstObject).text);
-    if (kScrollUpRestore && self.minimized) [self expandAboveBar:@"tab tap" scroll:sg_pageScroll];
     SGRTabPicked(self.sources.firstObject);
     forwardTap(self.sources.firstObject);
 }
@@ -1489,7 +1249,6 @@ static void logPlatterButtons(UIView *platter) {
 
 - (BOOL)tabBarController:(UITabBarController *)controller shouldSelectTab:(UITab *)tab API_AVAILABLE(ios(26.0)) {
     if (sg_flipping) return YES;
-    if (kScrollUpRestore && self.minimized) [self expandAboveBar:@"tab tap" scroll:sg_pageScroll];
     NSUInteger index = [self.tabs indexOfObject:tab];
     self.leadRedirected = self.touchedLead && [self isMiddle:index];
     if (self.leadRedirected) index = 0;
@@ -1626,14 +1385,21 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
     NSUInteger regularCount = 0;
     for (UIView *source in sources) if (!isSearchItem(source)) regularCount++;
     CGFloat room = sg_tabRoom(stockBar.bounds.size.width, MAX(regularCount, 1));
-    if (![sources isEqualToArray:tabs.sources]) {
+    // Search in the middle of the model (Home, Search, Library) is still drawn in the trailing
+    // circle, and the regular tab that ends up last in the leading platter is the one UIKit lays
+    // out with the search button's metrics: image view 1x1, title the first letter. Regular tabs
+    // stay in Spotify's order; Search is appended so it is the last tab.
+    if (![sources isEqualToArray:tabs.stockOrder]) {
+        NSMutableArray<UIView *> *ordered = [NSMutableArray array];
         NSMutableArray<UITab *> *list = [NSMutableArray array];
+        UIView *searchSource = nil;
+        UITab *searchTabBuilt = nil;
         NSMutableArray<NSString *> *platterNames = [NSMutableArray array];
         NSString *circle = @"none";
         for (UIView *source in sources) {
             NSString *full = labelIn(source).text ?: @"";
             BOOL search = isSearchItem(source);
-            NSString *title = hideLabels ? @"" : (search ? full : sg_titleThatFits(full, room));
+            NSString *title = hideLabels ? @"" : (kNavbarCustomLayout && !search ? sg_titleThatFits(full, room) : full);
             UITab *tab;
             // Only Search is a UISearchTab. The last visible item used to become the circle, so
             // while Create was hiding, La tua libreria was that circle and drew as its first letter.
@@ -1647,53 +1413,63 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
                 // asks for the field.
                 searchTab.automaticallyActivatesSearch = NO;
                 tab = searchTab;
+                searchSource = source;
+                searchTabBuilt = tab;
                 circle = full.length ? full : @"search";
             } else {
                 NSString *identifier = [NSString stringWithFormat:@"spotifyglass.tab.%lu", (unsigned long)list.count];
                 UIImage *glyph = glyphOf(source, NO);
                 tab = [[UITab alloc] initWithTitle:title image:glyph identifier:identifier
                             viewControllerProvider:^UIViewController *(UITab *t) { return inlinePage(t); }];
-                tab.preferredPlacement = UITabPlacementFixed;
+                if (kNavbarCustomLayout) tab.preferredPlacement = UITabPlacementFixed;
+                [ordered addObject:source];
+                [list addObject:tab];
                 [platterNames addObject:[NSString stringWithFormat:@"%@%@", title, glyph ? @"" : @" (no glyph)"]];
             }
-            [list addObject:tab];
         }
-        tabs.sources = sources;
+        if (searchSource && searchTabBuilt) {
+            [ordered addObject:searchSource];
+            [list addObject:searchTabBuilt];
+        }
+        tabs.stockOrder = sources;
+        tabs.sources = ordered;
         tabs.tabs = list;
-        SGLog(@"tab bar: %lu tabs, platter %@, circle %@, slot %.0f",
-              (unsigned long)list.count, platterNames.count ? [platterNames componentsJoinedByString:@", "] : @"none", circle, room);
+        SGLog(@"tab bar: %lu tabs, platter %@, circle %@ last, slot %.0f, custom layout %@",
+              (unsigned long)list.count,
+              platterNames.count ? [platterNames componentsJoinedByString:@", "] : @"none", circle, room,
+              kNavbarCustomLayout ? @"on" : @"off");
     }
-    if (tabs.tabBar.itemPositioning != UITabBarItemPositioningCentered)
+    if (kNavbarCustomLayout && tabs.tabBar.itemPositioning != UITabBarItemPositioningCentered)
         tabs.tabBar.itemPositioning = UITabBarItemPositioningCentered;
 
     // Spotify's selected tab shows its filled icon, as UITabBarItem's selectedImage did on the other bar.
-    // Minimized, UIKit leads with the selected tab, or with the last one picked while the trailing one is
-    // selected. The middle tabs all wear the first tab's glyph, unlit, so the first is what leads.
+    // Minimized, and only with custom layout on, the middle tabs wear the first tab's glyph.
+    NSArray<UIView *> *shown = tabs.sources ?: @[];
     UITab *selected = nil;
     UIView *current = SGRCurrentModTab();
-    NSUInteger modTab = current ? [sources indexOfObject:current] : NSNotFound;
+    NSUInteger modTab = current ? [shown indexOfObject:current] : NSNotFound;
     BOOL missing = NO;
     static UIImage *leadFrom, *lead;
-    UIImage *leadGlyph = tabs.minimized ? glyphOf(sources.firstObject, NO) : nil;
+    UIImage *leadGlyph = kNavbarCustomLayout && tabs.minimized && shown.count ? glyphOf(shown.firstObject, NO) : nil;
     if (leadGlyph != leadFrom) {
         leadFrom = leadGlyph;
         lead = [leadGlyph imageWithTintColor:UIColor.whiteColor renderingMode:UIImageRenderingModeAlwaysOriginal];
     }
-    for (NSUInteger i = 0; i < sources.count && i < tabs.tabs.count; i++) {
+    for (NSUInteger i = 0; i < shown.count && i < tabs.tabs.count; i++) {
         UITab *tab = tabs.tabs[i];
-        BOOL active = modTab != NSNotFound ? i == modTab : isActive(sources[i]);
+        BOOL active = modTab != NSNotFound ? i == modTab : isActive(shown[i]);
         if (active && !selected) selected = tab;
         if ([tab isKindOfClass:UISearchTab.class]) {
             UISearchTab *search = (UISearchTab *)tab;
             if (search.automaticallyActivatesSearch) search.automaticallyActivatesSearch = NO;
         }
-        UIImage *image = [tab isKindOfClass:UISearchTab.class] ? searchTabImage(sources[i], active) : glyphOf(sources[i], active);
+        UIImage *image = [tab isKindOfClass:UISearchTab.class] ? searchTabImage(shown[i], active) : glyphOf(shown[i], active);
         missing |= !image;
-        if (lead && [tabs isMiddle:i]) image = lead;
+        if (kNavbarCustomLayout && lead && [tabs isMiddle:i]) image = lead;
         if (image && tab.image != image) tab.image = image;
         if (![tab isKindOfClass:UISearchTab.class] && !hideLabels) {
-            NSString *full = labelIn(sources[i]).text ?: @"";
-            NSString *title = sg_titleThatFits(full, room);
+            NSString *full = labelIn(shown[i]).text ?: @"";
+            NSString *title = kNavbarCustomLayout ? sg_titleThatFits(full, room) : full;
             if (title.length && ![tab.title isEqualToString:title]) tab.title = title;
         }
     }
@@ -1703,7 +1479,7 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
     }
     if (selected) {
         NSUInteger index = [tabs.tabs indexOfObject:selected];
-        if (index < sources.count && isSearchItem(sources[index])) {
+        if (index < shown.count && isSearchItem(shown[index])) {
             UIView *page = containerOf(stockBar).view;
             if (page) SGRRaiseSearchChrome(page);
         }
@@ -1802,17 +1578,29 @@ static void searchPageScroll(void) {
                                      sg_pageScroll ? NSStringFromClass(sg_pageScroll.class) : @"none");
         }
     }
-    if (scroll == sg_pageScroll) [sg_inlineTabs notePageDrag:pan];
-    else if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled) sg_dragActive = NO;
+    if (scroll == sg_pageScroll) {
+        if (pan.state == UIGestureRecognizerStateBegan) sg_dragActive = YES;
+        else if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled) sg_dragActive = NO;
+    } else if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled) sg_dragActive = NO;
 }
 @end
 
+// Native UIKit expands at the top of the page and when the minimized bar is tapped.
+// These stay so MiniPlayer.m still links; they do not move the accessory.
 void SGRExpandInlineBar(void) {
-    [sg_inlineTabs settleAboveBar];
+    static BOOL logged;
+    if (!logged) {
+        logged = YES;
+        SGLog(@"tab bar: expand left to UIKit (top of the page, or a tap on the minimized bar)");
+    }
 }
 
 void SGRMinimizeInlineBar(void) {
-    [sg_inlineTabs minimizeFromCapsule];
+    static BOOL logged;
+    if (!logged) {
+        logged = YES;
+        SGLog(@"tab bar: minimize left to UIKit (scroll down from the top)");
+    }
 }
 
 static char kDragKey;
@@ -1829,8 +1617,8 @@ static char kDragKey;
         sg_pageScroll = scroll;
         static NSUInteger logged;
         if (logged++ < 8) SGLog(@"tab bar: offset follows %@ %p", NSStringFromClass(scroll.class), scroll);
+        nameScrollView();
     }
-    [sg_inlineTabs noteContentOffsetFrom:old.y to:offset.y scroll:scroll];
 }
 - (void)didMoveToWindow {
     %orig;
@@ -1866,6 +1654,8 @@ static BOOL sg_barPass, sg_itemsLaidOut;
     %orig;
     SGRInlineTabs *tabs = sg_inlineTabs;
     if (!tabs || (UITabBar *)self != tabs.tabBar || tabs.minimized) return;
+    sg_logLeadingTabs(tabs);
+    if (!kNavbarCustomLayout) return;
     // setFrame on the platter can dirty layout. Don't re-enter this pass.
     static BOOL placing;
     if (placing) return;
