@@ -24,6 +24,12 @@ Entries for the `beta-simix-overnight` fork. Release Please does not version the
 * **Why this page is the other one.** A header whose leading control is a down-chevron, rather than the system back button, and whose ⋯ presents a modal sheet immediately, is not `HeaderNavigationBar` on those three pages and is not the Now Playing menu. Treating every sheet as the player menu would steal Share and the other sheets those pages push. No file under `trees/` is in this checkout, and there is no Spotify binary here to read the DJ page's class or the ⋯ selector off, which is what a hook has to be proved against.
 * **Known limits:** Unverified on a phone. A tree of that page (the header class, the two buttons' classes and identifiers, and the sheet class the ⋯ presents) is what would make a glass header and, if the sheet is the same context-menu sheet the player already reads, the same menu.
 
+### Mini player expand
+
+* **Fixed:** With the Apple-style mini player on, an upward scroll expands the tab bar before the page is back at the top. `UITabBarMinimizeBehaviorOnScrollDown` (set in `Redesigned/Navbar/TabBar.x`) minimizes on the way down and, on iOS 26, comes back only at content offset 0. About 28pt toward the top, or a flick faster than 350pt/s, switches the behavior to `UITabBarMinimizeBehaviorNever`, which expands the bar. The next downward flick puts `OnScrollDown` back so minimize is unchanged.
+* **Changed:** An upward drag on the minimized capsule itself commits the same way (24pt, or a flick), instead of doing nothing. The sideways skip gesture is unchanged.
+* **Known limits:** `SPTBarInteractivePresentationController` is only named in a comment (`Shared/Player/PlayerEvents.x`). No selector for it is in this checkout, there is no `trees/` dump and no Spotify binary, so it was not hooked. Opening and closing the full player still follow Spotify's own progress on `SPTBarOverlayPresentationTransition`, which was already proven. Not compiled and not run on a phone. If UIKit ignores a behavior change made mid-drag, the expand waits until the finger lifts.
+
 ## [0.22.0](https://github.com/skopevoj/spoti.pw/compare/v0.21.1...v0.22.0) (2026-09-23)
 
 

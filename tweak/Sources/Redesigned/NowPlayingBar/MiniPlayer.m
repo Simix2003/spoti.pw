@@ -16,6 +16,10 @@
 // A swipe that goes this far across, or is let go of this fast, skips.
 static const CGFloat kCommitFraction = 0.25;
 static const CGFloat kCommitVelocity = 500;
+// An upward drag on the minimized capsule. The page list expands on the same kind of partial
+// drag (TabBar.x); this is that commit for a finger that is on the capsule rather than the list.
+static const CGFloat kExpandTravel = 24;
+static const CGFloat kExpandVelocity = 350;
 
 static char kImageContext;
 
@@ -30,6 +34,7 @@ static __weak SGRMiniPlayer *sg_miniPlayer;
     UIImageView *_artwork;
     UILabel *_title, *_artist;
     UIButton *_play;
+    UIPanGestureRecognizer *_lift;
     __weak UIImageView *_source;   // the artwork on Spotify's bar, watched for its picture
     BOOL _swiping;
 }
@@ -72,6 +77,9 @@ static __weak SGRMiniPlayer *sg_miniPlayer;
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panned:)];
     pan.delegate = self;
     [self addGestureRecognizer:pan];
+    _lift = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(lifted:)];
+    _lift.delegate = self;
+    [self addGestureRecognizer:_lift];
 
     if (@available(iOS 26.0, *)) {
         [self registerForTraitChanges:@[UITraitTabAccessoryEnvironment.class] withAction:@selector(environmentChanged)];
@@ -228,11 +236,26 @@ static __weak SGRMiniPlayer *sg_miniPlayer;
     if (!SGROpenPlayerFromBar()) SGLog(@"mini player: nothing on Spotify's bar took the tap");
 }
 
-// Only a sideways drag is a swipe; anything else is left to the page and to UIKit's own gestures.
+// A sideways drag skips. An upward drag on the minimized capsule expands the bar. Anything else is
+// left alone: the page under the capsule is not this view, and a downward drag is what minimizes.
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)recognizer {
     if (![recognizer isKindOfClass:UIPanGestureRecognizer.class]) return YES;
     CGPoint velocity = [(UIPanGestureRecognizer *)recognizer velocityInView:self];
+    if (recognizer == _lift) {
+        return [self isInline] && velocity.y < 0 && fabs(velocity.y) > fabs(velocity.x);
+    }
     return fabs(velocity.x) > fabs(velocity.y);
+}
+
+- (void)lifted:(UIPanGestureRecognizer *)pan {
+    if (pan.state != UIGestureRecognizerStateEnded) return;
+    CGFloat dy = [pan translationInView:self].y;
+    CGFloat vy = [pan velocityInView:self].y;
+    BOOL pulled = dy < -kExpandTravel;
+    BOOL flung = vy < -kExpandVelocity && dy < -8;
+    if (!pulled && !flung) return;
+    SGLog(@"mini player: swipe up expands (%.0fpt, %.0fpt/s)", dy, vy);
+    SGRExpandInlineBar();
 }
 
 - (void)panned:(UIPanGestureRecognizer *)pan {

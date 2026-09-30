@@ -547,6 +547,9 @@ static void syncBar(UIView *stockBar) {
 @property (nonatomic, strong) UITabAccessory *accessory API_AVAILABLE(ios(26.0));
 @property (nonatomic) BOOL holding;
 @property (nonatomic, readonly) BOOL minimized;
+// An upward drag committed early: behavior stays Never until a later downward drag.
+- (void)notePageDrag:(UIPanGestureRecognizer *)pan;
+- (void)expandForPartialDrag;
 // The last touch on the bar went down on the minimized leading tab, and its tap went to the first tab
 // while UIKit selects the one under it.
 @property (nonatomic) BOOL touchedLead, leadRedirected;
@@ -617,7 +620,70 @@ static void nameScrollView(void) {
 @end
 
 
-@implementation SGRInlineTabs
+@implementation SGRInlineTabs {
+    BOOL _expandHeld;
+    BOOL _dragMayMinimize;
+    CGFloat _dragAnchor;
+}
+
+// UIKit's OnScrollDown minimizes on the way down and only comes back at the top of the list
+// (iOS 26: the bar stays minimized through an upward scroll that never reaches offset 0).
+// Never puts it back now; the next downward drag arms OnScrollDown again so minimize still works.
+static const CGFloat kExpandTravel = 28;
+static const CGFloat kExpandVelocity = 350;
+
+- (CGFloat)cappedOffsetOf:(UIScrollView *)scroll {
+    CGFloat top = -scroll.adjustedContentInset.top;
+    CGFloat span = scroll.contentSize.height + scroll.adjustedContentInset.bottom - scroll.bounds.size.height;
+    CGFloat maxOffset = span > top ? span : top;
+    CGFloat y = scroll.contentOffset.y;
+    // Past the end is the bottom bounce, which is not an upward scroll.
+    if (y > maxOffset) y = maxOffset;
+    return y;
+}
+
+- (void)expandForPartialDrag {
+    if (@available(iOS 26.0, *)) {
+        if (!self.minimized) return;
+        _expandHeld = YES;
+        if (self.tabBarMinimizeBehavior == UITabBarMinimizeBehaviorNever) return;
+        self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorNever;
+        SGLog(@"tab bar: expands on a partial upward drag");
+    }
+}
+
+- (void)armMinimizeAfterExpand {
+    if (!_expandHeld) return;
+    _expandHeld = NO;
+    if (@available(iOS 26.0, *)) {
+        if (self.tabBarMinimizeBehavior == UITabBarMinimizeBehaviorOnScrollDown) return;
+        self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
+        SGLog(@"tab bar: a downward drag may minimize again");
+    }
+}
+
+- (void)notePageDrag:(UIPanGestureRecognizer *)pan {
+    UIScrollView *scroll = (UIScrollView *)pan.view;
+    if (![scroll isKindOfClass:UIScrollView.class]) return;
+    if (pan.state == UIGestureRecognizerStateBegan) {
+        _dragMayMinimize = _expandHeld;
+        _dragAnchor = [self cappedOffsetOf:scroll];
+        // Arm minimize at the start of a downward flick so that drag still minimizes, the way it
+        // did before an early expand switched the behavior to Never.
+        CGPoint velocity = [pan velocityInView:scroll];
+        if (_dragMayMinimize && velocity.y < -80 && fabs(velocity.y) > fabs(velocity.x)) [self armMinimizeAfterExpand];
+        return;
+    }
+    if (pan.state != UIGestureRecognizerStateChanged && pan.state != UIGestureRecognizerStateEnded) return;
+    CGFloat dy = [self cappedOffsetOf:scroll] - _dragAnchor;
+    CGPoint velocity = [pan velocityInView:scroll];
+    BOOL vertical = fabs(velocity.y) >= fabs(velocity.x);
+    // Finger moving down scrolls toward the top: dy goes negative, velocity.y is positive.
+    BOOL pulledUp = dy < -kExpandTravel;
+    BOOL flungUp = vertical && velocity.y > kExpandVelocity && dy < -8;
+    if (pulledUp || flungUp) [self expandForPartialDrag];
+    if (_dragMayMinimize && (dy > 8 || (vertical && velocity.y < -kExpandVelocity))) [self armMinimizeAfterExpand];
+}
 
 - (instancetype)init {
     if (!(self = [super init])) return nil;
@@ -956,13 +1022,18 @@ static void searchPageScroll(void) {
                                  scroll.contentOffset.y, inset.top, inset.bottom, scroll.contentSize.height, scroll.bounds.size.height,
                                  [sg_inlineTabs.selectedViewController contentScrollViewForEdge:NSDirectionalRectEdgeBottom] == scroll);
     }
-    if (pan.state != UIGestureRecognizerStateBegan) return;
-    if (![scroll isKindOfClass:UIScrollView.class] || scroll == sg_pageScroll || !isPageScroll(scroll)) return;
-    CGPoint velocity = [pan velocityInView:scroll];
-    if (fabs(velocity.y) <= fabs(velocity.x)) return;
-    takePageScroll(scroll, @"dragged");
+    if (pan.state == UIGestureRecognizerStateBegan
+        && [scroll isKindOfClass:UIScrollView.class] && scroll != sg_pageScroll && isPageScroll(scroll)) {
+        CGPoint velocity = [pan velocityInView:scroll];
+        if (fabs(velocity.y) > fabs(velocity.x)) takePageScroll(scroll, @"dragged");
+    }
+    if (scroll == sg_pageScroll) [sg_inlineTabs notePageDrag:pan];
 }
 @end
+
+void SGRExpandInlineBar(void) {
+    [sg_inlineTabs expandForPartialDrag];
+}
 
 static char kDragKey;
 
