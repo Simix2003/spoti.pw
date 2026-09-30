@@ -3,6 +3,7 @@
 #import "About.h"
 #import "App/Onboarding/Onboarding.h"
 #import "Shared/JamProbe/JamProbe.h"
+#import "Shared/StatsProbe/StatsProbe.h"
 
 // Makefile passes these. A build that doesn't still compiles, and the row says unknown.
 #ifndef SG_BUILD
@@ -104,6 +105,7 @@ UIViewController *SGAboutPage(void) {
     logFile.refreshOn = SGLogExportDidChangeNotification;
     [sections addObject:SGSection(@"Debug", @[
         withSymbol(SGPageRow(@"Jam probe", ^UIViewController *{ return SGJamProbePage(); }), @"ladybug"),
+        withSymbol(SGActionRow(@"Share last stats probe", @"The newest stats dump in Documents", ^{ SGStatsProbeShareLast(); }), @"chart.bar.xaxis"),
         logFile,
         withSymbol(SGActionRow(@"Share logs", @"AirDrop, Files, or Messages", ^{ shareLogs(); }), @"square.and.arrow.up"),
         withSymbol(SGActionRow(@"Clear logs", nil, ^{ confirmClearLogs(); }), @"trash"),

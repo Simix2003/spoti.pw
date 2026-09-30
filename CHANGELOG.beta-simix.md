@@ -8,6 +8,7 @@ Release Please still owns `CHANGELOG.beta.md`.
 
 ### Features
 
+* a Probe pill on Statistiche di ascolto writes a read-only dump of that screen (controllers, labels, cells, and model ivars) and opens the share sheet; Mod → Debug → Share last stats probe sends the newest file (`StatsProbe.m`, `AboutSettings.m`, `docs/stats-probe.md`)
 * Mod → Debug → Share logs sends the on-phone log by AirDrop, Files, or Messages, and Clear logs deletes it; the Log file row shows the size and the Build (`SGLog.m`, `AboutSettings.m`, `docs/logs.md`) ([9d1e959](https://github.com/Simix2003/spoti.pw/commit/9d1e9599e17b3568d925fa617bfa9161cdb2ca9b))
 * Jam probe, under Mod → Debug, writes a read-only dump of Jam-like classes and the screen after a 3 second wait, then shares that file; it does not join, skip, or call action methods (`JamProbe.m`, `AboutSettings.m`, `docs/jam-probe.md`) ([ff3b7fd](https://github.com/Simix2003/spoti.pw/commit/ff3b7fd86ad773684964caadf1130d01fa4dd7f2))
 * a mixed playlist (one whose curation row has the Mix pill) sweeps a highlight across the white Play capsule; Reduce Motion draws nothing, and the sweep stops while the capsule is off screen (`PlaylistMenu.x`, `PlaylistHeader.x`, `SGRActionRow.m`) ([55f0102](https://github.com/Simix2003/spoti.pw/commit/55f0102edeadc31e4c146f729326fa3791a2cb60))
