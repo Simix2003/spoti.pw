@@ -16,6 +16,10 @@ Release Please still owns `CHANGELOG.beta.md`.
 
 ### Fixes
 
+* a mixed playlist's Play glow is readable again: the softer pass left the ring mask and the layer opacity too low to see on device (`SGRActionRow.m`, `SGRHeaderInfo.m`, `PlaylistHeader.x`)
+
+* the redesigned tab bar always splits Search into the trailing circle (Home and Library in the leading platter), even when the Apple Music style mini player is off; that layout needs `UITabBarController` + `UISearchTab`, which used to run only with the mini player setting, so the bar stayed one unified platter of three tabs (`TabBar.x`)
+
 * every visible tab in the leading platter shows its icon and its full title, for two tabs and for three; Search stays the trailing circle because it is the last `UISearchTab`, and `kNavbarCustomLayout` is off so the bar does not set `itemWidth` or move the platter (that pass left the last leading tab's image at 1×1 and its title as the first letter) (`TabBar.x`) ([937ff30](https://github.com/Simix2003/spoti.pw/commit/937ff306d2ba712235b078aa09f5fc1c5d49b69e))
 * the mini player expands and minimizes the way UIKit does, at the top of the page or by a tap on the minimized bar; `kScrollUpRestore` is off, and nothing toggles `tabBarMinimizeBehavior` or takes the accessory off the bar (`TabBar.x`, `MiniPlayer.m`) ([937ff30](https://github.com/Simix2003/spoti.pw/commit/937ff306d2ba712235b078aa09f5fc1c5d49b69e))
 * a mixed playlist's Play glow is softer, thinner and slower, and it is on when the page opens; the Mix pill lives on a zero-height curation cell that used to be read only after a scroll laid the header out again (`SGRActionRow.m`, `PlaylistHeader.x`, `PlaylistMenu.x`, `PlaylistRows.x`) ([3bba9ed](https://github.com/Simix2003/spoti.pw/commit/3bba9ed794df0be0ceee97c18f93d1fb4bf94d34))

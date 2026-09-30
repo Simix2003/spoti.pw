@@ -1,8 +1,10 @@
-// Tab bar: Spotify's own bar stays where it is but goes invisible, and a system UITabBar sits on top
-// of it. On iOS 26+ with UIDesignRequiresCompatibility off, UIKit draws that bar as real Liquid Glass
-// (selection bubble, lensing, light/dark adaptation) with no glass API of ours. Spotify's bar keeps
-// its frame, so the page insets and the now playing bar stay where Spotify puts them; where the system
-// bar is taller than Spotify's, Spotify is made to leave it the room (see "room for the glass bar").
+// Tab bar: Spotify's own bar stays where it is but goes invisible, and a system bar sits on top of
+// it. On iOS 26 the redesign uses a UITabBarController so Search can be a UISearchTab: UIKit then
+// draws the regular tabs in a leading Liquid Glass platter and Search as its own trailing circle,
+// the way Music does. With the Apple Music style player on, that same controller also takes a
+// UITabAccessory mini player and minimizes on scroll. Spotify's bar keeps its frame, so the page
+// insets and the now playing bar stay where Spotify puts them; where the system bar is taller than
+// Spotify's, Spotify is made to leave it the room (see "room for the glass bar").
 //
 // A tab picked on the system bar is passed on as a tap on the hidden Spotify item it mirrors, and the
 // system bar's selection follows whichever Spotify label is painted white, or a tab of the mod's own
@@ -24,7 +26,11 @@
 static char kBarKey, kHostKey;
 static __weak UIView *sg_stockBar;
 static CGFloat sg_room, sg_glassHeight;   // see "room for the glass bar"
-static BOOL sg_inline;                     // see "the tab bar with the mini player"
+// UITabBarController + UISearchTab: leading platter (Home, Library, …) and Search as its own
+// trailing circle, the way Music lays the bar out. Always on for the redesign on iOS 26.
+static BOOL sg_systemTabs;
+// Mini player as UITabAccessory with OnScrollDown minimize. Opt-in (SGRInlinePlayer).
+static BOOL sg_inline;
 // Full bar width divided by the most tabs seen at that width. Later hides fit the glass bar to
 // slot * visible count; the sample is always the unfitted width, so fitting cannot shrink the slot.
 static NSUInteger sg_slotCount;
@@ -218,9 +224,17 @@ static UIImage *searchTabImage(UIView *item, BOOL active) {
 }
 
 static BOOL isSearchItem(UIView *item) {
+    if (!item) return NO;
+    // Spotify's own id (trees/home: TabBar.Item.Search) is the surest mark.
+    NSString *ident = item.accessibilityIdentifier;
+    if ([ident isEqualToString:@"TabBar.Item.Search"] || [ident hasSuffix:@".Search"]) return YES;
     id icon = encoreIconOf(iconIn(item));
     NSString *name = [icon respondsToSelector:@selector(name)] ? [icon name] : nil;
-    return name.length && [name rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound;
+    if (name.length && [name rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    // Localized titles still name the tab; a custom tab whose title happens to be Search is rare.
+    NSString *title = labelIn(item).text;
+    if (title.length && [title rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    return NO;
 }
 
 #pragma mark - passing a tap on
@@ -483,7 +497,7 @@ static void makeRoom(UIViewController *container) {
     CGFloat height = glassHeight(bar, stockBar);
     // Spotify's regular width bar is a fixed 76 pt that ignores the inset.
     BOOL compact = container.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassCompact;
-    CGFloat room = compact && !sg_inline ? MAX(0, ceil(height - kStockRow - inset)) : 0;
+    CGFloat room = compact && !sg_systemTabs ? MAX(0, ceil(height - kStockRow - inset)) : 0;
     if (fabs(extra.bottom - room) < 0.5) return;
     sg_room = extra.bottom = room;
     container.additionalSafeAreaInsets = extra;
@@ -494,7 +508,9 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0));
 
 static void syncBar(UIView *stockBar) {
     sg_stockBar = stockBar;
-    if (sg_inline) {
+    // Split bar (leading tabs + trailing Search circle) needs UITabBarController + UISearchTab.
+    // A plain UITabBar draws every tab in one platter.
+    if (sg_systemTabs) {
         if (@available(iOS 26.0, *)) syncInline(stockBar);
         return;
     }
@@ -602,12 +618,14 @@ static void syncBar(UIView *stockBar) {
     makeRoom(containerOf(stockBar));
 }
 
-#pragma mark - the tab bar with the mini player
+#pragma mark - the split tab bar (and the mini player)
 
-// With the mini player on (SGRKeyInlinePlayer), the glass bar is a UITabBarController's instead, since
-// the bottom accessory and minimizing on scroll are the controller's: UIKit then draws the mini player
-// above the bar and, scrolled, moves it in between the first tab and the last, all of it its own
-// morph. The controller's pages are empty and clear; Spotify's pages stay where they are, under it.
+// On iOS 26 the glass bar is a UITabBarController's: UISearchTab as the last tab puts Search in the
+// trailing circle and the rest in the leading platter. With the mini player on (SGRKeyInlinePlayer),
+// the same controller also takes a bottom accessory and minimizes on scroll: UIKit then draws the
+// mini player above the bar and, scrolled, moves it in between the first tab and Search, all of it
+// its own morph. The controller's pages are empty and clear; Spotify's pages stay where they are,
+// under it.
 //
 // Minimizing needs no private API: UIKit watches the scroll view the selected page names for its
 // bottom edge (-setContentScrollView:forEdge:), and the one named is the page of Spotify's in front,
@@ -828,9 +846,14 @@ static void nameScrollView(void) {
     self.delegate = self;
     self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     if (@available(iOS 26.0, *)) {
-        self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
-        self.accessory = [[UITabAccessory alloc] initWithContentView:SGRMakeMiniPlayer()];
-        [self.accessory.contentView registerForTraitChanges:@[UITraitTabAccessoryEnvironment.class] withTarget:self action:@selector(minimizedChanged)];
+        // Split Search is always on; the accessory and OnScrollDown are the Apple Music style player.
+        if (sg_inline) {
+            self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
+            self.accessory = [[UITabAccessory alloc] initWithContentView:SGRMakeMiniPlayer()];
+            [self.accessory.contentView registerForTraitChanges:@[UITraitTabAccessoryEnvironment.class] withTarget:self action:@selector(minimizedChanged)];
+        } else {
+            self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorNever;
+        }
     }
     SGAddPlayerStateObserver(self);
     // Setting the controller up above can load its view, so viewDidLoad may have run with no accessory yet.
@@ -849,7 +872,8 @@ static void nameScrollView(void) {
     tap.cancelsTouchesInView = NO;
     [self.tabBar addGestureRecognizer:tap];
     [self playerStateDidChange:SGPlayerState()];
-    SGLog(@"tab bar: custom layout %@, scroll-up restore %@", kNavbarCustomLayout ? @"on" : @"off", kScrollUpRestore ? @"on" : @"off");
+    SGLog(@"tab bar: split Search on, mini player %@, custom layout %@, scroll-up restore %@",
+          sg_inline ? @"on" : @"off", kNavbarCustomLayout ? @"on" : @"off", kScrollUpRestore ? @"on" : @"off");
 }
 
 // iOS 26 draws the regular tabs in one liquid-glass platter and the search tab in another.
@@ -1241,6 +1265,10 @@ static void sg_logLeadingTabs(SGRInlineTabs *tabs) {
 // The mini player is there while Spotify has a track to show on its bar, paused or not.
 - (void)playerStateDidChange:(SPTPlayerState *)state {
     if (@available(iOS 26.0, *)) {
+        if (!sg_inline) {
+            if (self.bottomAccessory) [self setBottomAccessory:nil animated:NO];
+            return;
+        }
         BOOL track = SGURIString(state.track.URI).length > 0;
         UITabAccessory *want = track ? self.accessory : nil;
         if (self.bottomAccessory != want) [self setBottomAccessory:want animated:self.viewIfLoaded.window != nil];
@@ -1366,7 +1394,7 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
         tabs.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [host addSubview:tabs.view];
         [tabs endAppearanceTransition];
-        SGLog(@"tab bar: the mini player's tab bar controller is up over %@", NSStringFromCGRect(view.bounds));
+        SGLog(@"tab bar: the split tab bar controller is up over %@", NSStringFromCGRect(view.bounds));
         dispatch_async(dispatch_get_main_queue(), ^{ searchPageScroll(); });
     } else if (view.subviews.lastObject != host) {
         [view bringSubviewToFront:host];
@@ -1738,7 +1766,11 @@ static void itemDidLayOut(UIView *item) {
 
 %ctor {
     if (!SGRedesignedUI()) return;
-    if (@available(iOS 26.0, *)) sg_inline = SGRInlinePlayer();
+    if (@available(iOS 26.0, *)) {
+        // Split bar always; mini player accessory only when the setting is on.
+        sg_systemTabs = YES;
+        sg_inline = SGRInlinePlayer();
+    }
     %init;
     if (sg_inline) %init(SGRInlinePlayerScroll);
     SGRequireClasses(@[

@@ -2,6 +2,8 @@
 // (Navbar.x, NavbarLayout.m), which the redesign keeps apart from the native look's: an ordered list of
 // entries, each a dictionary. An entry with a URI is a tab of the mod's own; one without names
 // one of Spotify's, by the label under its icon. No list at all is Spotify's order, all shown.
+// On iOS 26 the bar is a UITabBarController so Search is a trailing UISearchTab circle; the Apple
+// Music style player setting only adds the mini player accessory and minimize-on-scroll.
 #import <UIKit/UIKit.h>
 
 #define SGRKeyNavbar @"spotifyglass.redesign.navbar"

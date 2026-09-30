@@ -47,8 +47,9 @@ static NSString *wordIn(UIView *button) {
 
 #pragma mark - the Play capsule
 
-// How far the halo reaches past the capsule. The action row leaves 16pt between buttons.
-static const CGFloat kGlowSpread = 7;
+// How far the halo reaches past the capsule. The action row leaves 16pt between buttons;
+// the header keeps 14pt under Play, so this stays inside both.
+static const CGFloat kGlowSpread = 11;
 
 static UIColor *sgr_shiftHue(UIColor *color, CGFloat turn) {
     CGFloat h = 0, s = 0, b = 0, a = 1;
@@ -143,9 +144,10 @@ static UIImage *sgr_glowRing(CGSize capsule, CGFloat spread) {
     CGRect edge = CGRectInset(CGRectMake(0, 0, size.width, size.height), spread, spread);
     edge = CGRectInset(edge, 1.5, 1.5);
     UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:edge cornerRadius:edge.size.height / 2];
-    CGContextSetShadowWithColor(ctx, CGSizeZero, 5, [UIColor colorWithWhite:1 alpha:0.28].CGColor);
-    CGContextSetStrokeColorWithColor(ctx, [UIColor colorWithWhite:1 alpha:0.18].CGColor);
-    CGContextSetLineWidth(ctx, 1.25);
+    // The mask's alpha is the glow's ceiling: 0.18 × a 0.38 layer was invisible on device.
+    CGContextSetShadowWithColor(ctx, CGSizeZero, 7, [UIColor colorWithWhite:1 alpha:0.75].CGColor);
+    CGContextSetStrokeColorWithColor(ctx, [UIColor colorWithWhite:1 alpha:0.6].CGColor);
+    CGContextSetLineWidth(ctx, 2.75);
     CGContextAddPath(ctx, path.CGPath);
     CGContextStrokePath(ctx);
     UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
@@ -285,23 +287,23 @@ static UIImage *sgr_glowRing(CGSize capsule, CGFloat spread) {
     if (reduce) {
         [_spin removeAnimationForKey:@"spin"];
         [_spin removeAnimationForKey:@"breathe"];
-        _spin.opacity = 0.32;
+        _spin.opacity = 0.7;
         return;
     }
     if (![_spin animationForKey:@"spin"]) {
         CABasicAnimation *spin = [CABasicAnimation animationWithKeyPath:@"transform.rotation.z"];
         spin.fromValue = @0;
         spin.toValue = @(6.283185307179586);
-        spin.duration = 9;
+        spin.duration = 6.5;
         spin.repeatCount = HUGE_VALF;
         spin.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionLinear];
         [_spin addAnimation:spin forKey:@"spin"];
     }
     if (![_spin animationForKey:@"breathe"]) {
         CABasicAnimation *breathe = [CABasicAnimation animationWithKeyPath:@"opacity"];
-        breathe.fromValue = @0.16;
-        breathe.toValue = @0.38;
-        breathe.duration = 3.4;
+        breathe.fromValue = @0.5;
+        breathe.toValue = @0.88;
+        breathe.duration = 3;
         breathe.autoreverses = YES;
         breathe.repeatCount = HUGE_VALF;
         breathe.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];

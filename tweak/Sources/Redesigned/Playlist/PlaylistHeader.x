@@ -447,6 +447,8 @@ static SGRHeaderInfo *applyInfo(UIView *block, UIView *headerRoot, UIViewControl
         [block addSubview:info];
     }
     else if (block.subviews.lastObject != info) [block bringSubviewToFront:info];
+    // Play's mix halo reaches a few points past the capsule; Spotify's block often clips.
+    if (block.clipsToBounds) block.clipsToBounds = NO;
     for (UIView *sub in block.subviews) {
         if (sub != info) conceal(sub);
     }

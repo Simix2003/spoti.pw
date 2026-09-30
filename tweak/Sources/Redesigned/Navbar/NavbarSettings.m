@@ -669,7 +669,7 @@ typedef NS_ENUM(NSInteger, SGRNavbarSection) {
     switch (path.section) {
         case SGRNavbarSectionSwitch: {
             BOOL labels = path.row == 1, inlinePlayer = path.row == 2;
-            if (inlinePlayer) SGFillCell(cell, @"Apple Music style player", @"Moves in beside the tabs on scroll. Restart to apply", nil, nil);
+            if (inlinePlayer) SGFillCell(cell, @"Apple Music style player", @"Mini player beside the tabs on scroll. Restart to apply", nil, nil);
             else SGFillCell(cell, labels ? @"Hide labels" : @"Custom navbar", labels ? @"Icons only" : nil, nil, nil);
             UISwitch *toggle = [UISwitch new];
             toggle.onTintColor = SGGreen();
