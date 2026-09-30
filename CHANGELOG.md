@@ -58,6 +58,10 @@ Entries for the `beta-simix-overnight` fork. Release Please does not version the
 * **What already reaches the car, when Spotify's own CarPlay session is up.** `LockScreenLyrics.x` puts the current line in `MPMediaItemPropertyArtist` on `MPNowPlayingInfoCenter`, which is the dictionary `CPNowPlayingTemplate` shows. It does not set `MPMediaItemPropertyLyrics`, and that key is not a lyrics view. CarPlay's audio rules say not to show lyrics on the car screen. Nothing was added to push lines there. Animated artwork stays on the lock screen's iOS 26 keys.
 * **Known limits:** Not run on a car or a phone. No CarPlay class is proved in this checkout, so none was hooked. A head unit may keep the artist from the track change and ignore later line updates.
 
+### Downloaded songs
+
+* **Known limits:** The redesign does not draw a per-song downloaded mark. Playlist and album rows are Spotify's own cells, restyled in `PlaylistRows.x` and `AlbumRows.x`, and those cells are not given a download glyph. Only the entity-level download button is restyled (`SGRDownload.m`). Left as it is.
+
 ## [0.22.0](https://github.com/skopevoj/spoti.pw/compare/v0.21.1...v0.22.0) (2026-09-23)
 
 
