@@ -203,7 +203,8 @@ Redesigned:
     Navbar/       the glass tab bar (TabBar.x) over its own composition (Navbar.x, NavbarLayout.m) and editor, with the fade to
                   black over the pages behind the bars that Spotify's bar drew; the glass search field (SearchField.x).
                   On iOS 26 the bar is a UITabBarController: the tabs the Navbar list leaves shown sit in the leading
-                  platter with their icon and title, and Search is a trailing UISearchTab circle. Picking Search opens
+                  platter with their icon and title, and Search is a trailing UISearchTab circle. The search tab is the
+                  bar's prominent tab, which is what separates that circle; its own search mode stays off. Picking Search opens
                   Spotify's page and asks for its field. The Apple Music style player (on unless turned off, read at
                   launch) adds the mini player as a UITabAccessory and lets UIKit minimize the bar on scroll; nothing
                   in the mod slides the platter or sets item widths. Spotify is made to leave the glass bar its height

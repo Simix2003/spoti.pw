@@ -601,12 +601,65 @@ static BOOL sg_flipping;
 static BOOL sg_dragActive;
 static void searchPageScroll(void);
 
+// iOS 27 separates one tab, the prominent one. A UISearchTab gets that on its own only when
+// automaticallyActivatesSearch is YES, which would open UIKit's search on the empty stand-in page.
+// The search tab is marked prominent instead, so the trailing circle stays and Spotify's field
+// is still asked for from shouldSelectTab.
+static NSString *const kSearchTabIdentifier = @"spotifyglass.tab.search";
+
+static void assignSearchIdentifier(UISearchTab *tab) API_AVAILABLE(ios(26.0)) {
+    if ([tab respondsToSelector:@selector(setIdentifier:)])
+        ((void (*)(id, SEL, NSString *))objc_msgSend)(tab, @selector(setIdentifier:), kSearchTabIdentifier);
+}
+
+static NSString *prominentIdentifier(UITabBarController *tabs) API_AVAILABLE(ios(26.0)) {
+    if (![tabs respondsToSelector:@selector(prominentTabIdentifier)]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(tabs, @selector(prominentTabIdentifier));
+}
+
+static void setProminentSearch(UITabBarController *tabs, NSString *identifier) API_AVAILABLE(ios(26.0)) {
+    SEL set = @selector(setProminentTabIdentifier:);
+    if (![tabs respondsToSelector:set]) return;
+    id current = prominentIdentifier(tabs);
+    if (identifier ? [current isEqual:identifier] : current == nil) return;
+    ((void (*)(id, SEL, id))objc_msgSend)(tabs, set, identifier);
+}
+
+// One line when the model changes: which tabs are in the bar, and whether Search has the role
+// UIKit uses for the trailing circle.
+static void noteSearchRole(UITabBarController *tabs) API_AVAILABLE(ios(26.0)) {
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    NSString *role = nil;
+    NSString *ident = nil;
+    for (UITab *tab in tabs.tabs) {
+        BOOL search = [tab isKindOfClass:UISearchTab.class];
+        [names addObject:[NSString stringWithFormat:@"%@%@", tab.title.length ? tab.title : @"?", search ? @"*" : @""]];
+        if (!search || role) continue;
+        role = tab.title.length ? tab.title : @"search";
+        ident = tab.identifier.length ? tab.identifier : nil;
+    }
+    setProminentSearch(tabs, ident);
+    BOOL prominent = ident.length && [prominentIdentifier(tabs) isEqualToString:ident];
+    static NSString *last;
+    NSString *line = [NSString stringWithFormat:@"tab bar: %@, search role %@%@",
+                      names.count ? [names componentsJoinedByString:@", "] : @"none",
+                      role ?: @"none", prominent ? @" prominent" : @""];
+    if ([line isEqualToString:last]) return;
+    last = [line copy];
+    SGLog(@"%@", line);
+}
+
 static void nameScrollView(void) {
     if (!sg_inline) return;
     SGRInlineTabs *tabs = sg_inlineTabs;
     UIViewController *page = tabs.selectedViewController;
     UIScrollView *scroll = sg_pageScroll;
     if (!page || !scroll.window) return;
+    // The search stand-in stays a search tab. Naming Spotify's list onto it pulls Search into the
+    // leading platter, and the mini player then has no trailing circle to sit against.
+    if (@available(iOS 26.0, *)) {
+        if ([tabs.selectedTab isKindOfClass:UISearchTab.class]) return;
+    }
     UIScrollView *named = [page contentScrollViewForEdge:NSDirectionalRectEdgeBottom];
     if (named != scroll) {
         [page setContentScrollView:scroll forEdge:NSDirectionalRectEdgeAll];
@@ -648,9 +701,13 @@ static void nameScrollView(void) {
     nameScrollView();
 }
 // UIKit minimizes from this. The stand-in page has no list of its own; Spotify's page list is named
-// here so Home and Library both hand UIKit the same bottom-edge scroll view.
+// here so Home and Library both hand UIKit the same bottom-edge scroll view. The search stand-in
+// does not: a list on that page is what keeps Search in the leading platter.
 - (UIScrollView *)contentScrollViewForEdge:(NSDirectionalRectEdge)edge {
     UIScrollView *superScroll = [super contentScrollViewForEdge:edge];
+    if (@available(iOS 18.0, *)) {
+        if ([self.tab isKindOfClass:UISearchTab.class]) return superScroll;
+    }
     if (edge & NSDirectionalRectEdgeBottom) {
         UIScrollView *page = sg_pageScroll;
         if (page.window) return page;
@@ -924,14 +981,17 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
     // Search in the middle of the model (Home, Search, Library) is still drawn in the trailing
     // circle, and the regular tab that ends up last in the leading platter is the one UIKit lays
     // out with the search button's metrics: image view 1x1, title the first letter. Regular tabs
-    // stay in Spotify's order; Search is appended so it is the last tab.
-    if (![sources isEqualToArray:tabs.stockOrder]) {
+    // stay in Spotify's order; Search is appended so it is the last tab. A first pass that built
+    // regular tabs, before Search could be told apart, is rebuilt once it can.
+    BOOL wantSearch = NO;
+    for (UIView *source in sources) if (isSearchItem(source)) wantSearch = YES;
+    BOOL haveSearch = NO;
+    for (UITab *tab in tabs.tabs) if ([tab isKindOfClass:UISearchTab.class]) haveSearch = YES;
+    if (wantSearch != haveSearch || ![sources isEqualToArray:tabs.stockOrder]) {
         NSMutableArray<UIView *> *ordered = [NSMutableArray array];
         NSMutableArray<UITab *> *list = [NSMutableArray array];
         UIView *searchSource = nil;
         UITab *searchTabBuilt = nil;
-        NSMutableArray<NSString *> *platterNames = [NSMutableArray array];
-        NSString *circle = @"none";
         for (UIView *source in sources) {
             NSString *full = labelIn(source).text ?: @"";
             BOOL search = isSearchItem(source);
@@ -943,15 +1003,15 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
                 UISearchTab *searchTab = [[UISearchTab alloc] initWithViewControllerProvider:^UIViewController *(UITab *t) { return inlinePage(t); }];
                 searchTab.title = title;
                 searchTab.image = glyphOf(source, NO);
+                assignSearchIdentifier(searchTab);
                 // automaticallyActivatesSearch opens UIKit's search on this tab's view controller,
                 // which is an empty stand-in, not Spotify's Search page: the tap then never focuses
                 // Spotify's field. The circle only selects; shouldSelectTab forwards to Spotify and
-                // asks for the field.
+                // asks for the field. The trailing circle itself is the prominent tab, set below.
                 searchTab.automaticallyActivatesSearch = NO;
                 tab = searchTab;
                 searchSource = source;
                 searchTabBuilt = tab;
-                circle = full.length ? full : @"search";
             } else {
                 NSString *identifier = [NSString stringWithFormat:@"spotifyglass.tab.%lu", (unsigned long)list.count];
                 UIImage *glyph = glyphOf(source, NO);
@@ -959,7 +1019,6 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
                             viewControllerProvider:^UIViewController *(UITab *t) { return inlinePage(t); }];
                 [ordered addObject:source];
                 [list addObject:tab];
-                [platterNames addObject:[NSString stringWithFormat:@"%@%@", title, glyph ? @"" : @" (no glyph)"]];
             }
         }
         if (searchSource && searchTabBuilt) {
@@ -969,10 +1028,8 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
         tabs.stockOrder = sources;
         tabs.sources = ordered;
         tabs.tabs = list;
-        SGLog(@"tab bar: %lu tabs, platter %@, circle %@ last",
-              (unsigned long)list.count,
-              platterNames.count ? [platterNames componentsJoinedByString:@", "] : @"none", circle);
     }
+    noteSearchRole(tabs);
 
     // Spotify's selected tab shows its filled icon. UIKit lays the platter out.
     NSArray<UIView *> *shown = tabs.sources ?: @[];
