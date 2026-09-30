@@ -7,6 +7,7 @@
 // (text, frames, accessibility, image size). It does not walk arbitrary ivars.
 #import "StatsProbe.h"
 #import "Core/SGCore.h"
+#import "Settings/SGPageStyle.h"
 
 #ifndef SG_BUILD
 #define SG_BUILD "unknown"
