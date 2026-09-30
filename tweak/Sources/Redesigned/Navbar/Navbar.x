@@ -24,7 +24,16 @@ static const CGFloat kIconSize = 24;
 static const CGFloat kIconTop = 12.5;
 static const CGFloat kLabelTop = 35;
 static const CGFloat kLabelHeight = 14;
-static char kCustomKey, kOrderKey;
+static char kCustomKey, kOrderKey, kShownKey;
+
+BOOL SGRNavbarShowsItem(UIView *item) {
+    NSNumber *shown = objc_getAssociatedObject(item, &kShownKey);
+    return !shown || shown.boolValue;
+}
+
+static void markShown(UIView *item, BOOL shown) {
+    objc_setAssociatedObject(item, &kShownKey, @(shown), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 
 // Where Spotify's own items keep their icon and label, read off one of them every pass, so an item of
 // the mod's own sits on the same line as its neighbours.
@@ -239,8 +248,10 @@ void SGRComposeTabBar(UIView *tabBar) {
                 else custom[ident] = item = [[SGRTabItemView alloc] initWithEntry:entry];
                 [keep addObject:ident];
                 [wanted addObject:item];
+                markShown(item, YES);
             } else if (stockViews[ident]) {
                 stockViews[ident].hidden = hidden;
+                markShown(stockViews[ident], !hidden);
                 [wanted addObject:stockViews[ident]];
             }
         }
@@ -251,6 +262,7 @@ void SGRComposeTabBar(UIView *tabBar) {
         UIView *item = stockViews[ident];
         if (!item || [wanted containsObject:item]) continue;
         item.hidden = NO;
+        markShown(item, YES);
         [wanted addObject:item];
     }
     for (NSString *ident in custom.allKeys) {
@@ -262,7 +274,10 @@ void SGRComposeTabBar(UIView *tabBar) {
     // A bar with nothing on it would strand whoever emptied it, so the last word is Spotify's.
     BOOL empty = YES;
     for (UIView *item in wanted) if (!item.hidden) empty = NO;
-    if (empty) for (UIView *item in wanted) item.hidden = NO;
+    if (empty) for (UIView *item in wanted) {
+        item.hidden = NO;
+        markShown(item, YES);
+    }
 
     // Items of the mod's own join the stack at the end, where they are past whatever Spotify
     // counts, and Spotify's own keep the places it gave them.

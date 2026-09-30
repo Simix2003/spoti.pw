@@ -318,6 +318,10 @@ static BOOL sameImages(NSArray<UIImage *> *a, NSArray<UIImage *> *b) {
     if (changed) [self setNeedsLayout];
 }
 
+- (void)setPlayShimmer:(BOOL)on {
+    _play.mixShimmer = on;
+}
+
 - (void)trailingStateChanged {
     if (_trailing.source) [_trailing feedFrom:_trailing.source];
 }

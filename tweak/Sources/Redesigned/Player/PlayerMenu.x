@@ -45,7 +45,10 @@ static const CGFloat kPanelWidth = 300, kPanelTop = 12;
 static BOOL sgr_menuOn;
 static __weak UIView *sgr_moreButton;
 static NSTimeInterval sgr_moreTappedAt;
-static char kTakeoverKey, kWatchedKey, kDimmingKey, kMaskKey, kSavedMaskKey, kClaimKey, kTakenKey, kHiddenDimmingsKey, kAnchorKey;
+static char kTakeoverKey, kWatchedKey, kDimmingKey, kMaskKey, kSavedMaskKey, kClaimKey, kTakenKey, kHiddenDimmingsKey, kAnchorKey, kContainerTouchesKey;
+// YES from a present that can dismiss the menu opened on the tap until the next turn. An outside
+// tap after that is the person closing it, and must not run the reopen meant for that present.
+static BOOL sgr_sheetPresenting;
 
 #pragma mark - where each of Spotify's rows goes
 
@@ -506,7 +509,24 @@ static void showSystemDimming(UIView *container) {
     objc_setAssociatedObject(container, &kHiddenDimmingsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
+// The claimed sheet's container is full screen. Hiding the presented view leaves that container
+// able to take the tap that should dismiss the glass menu.
+static void dropContainerTouches(UIView *container) {
+    if (!container) return;
+    if (!objc_getAssociatedObject(container, &kContainerTouchesKey))
+        objc_setAssociatedObject(container, &kContainerTouchesKey, @(container.userInteractionEnabled), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (container.userInteractionEnabled) container.userInteractionEnabled = NO;
+}
+
+static void restoreContainerTouches(UIView *container) {
+    NSNumber *was = objc_getAssociatedObject(container, &kContainerTouchesKey);
+    if (!was) return;
+    container.userInteractionEnabled = was.boolValue;
+    objc_setAssociatedObject(container, &kContainerTouchesKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 static void hidePresentation(UIView *sheet, UIView *container) {
+    dropContainerTouches(container);
     if (!sheet) {
         if (container) {
             UIView *dimming = dimmingIn(container);
@@ -533,6 +553,7 @@ static void hidePresentation(UIView *sheet, UIView *container) {
 }
 
 static void showPresentation(UIView *sheet, UIView *container) {
+    restoreContainerTouches(container);
     dimmingIn(container).hidden = NO;
     showSystemDimming(container);
     id saved = objc_getAssociatedObject(sheet, &kSavedMaskKey);
@@ -657,7 +678,9 @@ static void openMenu(SGRPlayerMenuTakeover *t);
 
 static void menuClosed(SGRPlayerMenuTakeover *t) {
     if (!t || t.closed) return;
-    if (t.sheetStoleMenu && !t.pick) {
+    // Only the dismiss inside the sheet's present reopens. A later outside tap used to hit this
+    // with sheetStoleMenu still set and put the menu straight back.
+    if (t.sheetStoleMenu && !t.pick && sgr_sheetPresenting) {
         t.opened = NO;
         t.shown = NO;
         if (t.reopenQueued) return;
@@ -675,8 +698,11 @@ static void menuClosed(SGRPlayerMenuTakeover *t) {
         });
         return;
     }
+    t.sheetStoleMenu = NO;
+    t.reopenQueued = NO;
     t.waitingForSheet = NO;
     t.closed = YES;
+    SGLog(@"redesign player menu: closed%@", t.pick ? @", a row was picked" : @"");
     if (t.pick) {
         runPick(t);
         return;
@@ -1022,9 +1048,16 @@ static void logDarkness(UIView *anyView) {
 %hook UIViewController
 - (void)presentViewController:(UIViewController *)viewController animated:(BOOL)animated completion:(void (^)(void))completion {
     SGRPlayerMenuTakeover *early = sgr_early;
-    if (early && early.waitingForSheet && early.shown && !early.closed && !early.finished && !early.revealed)
+    BOOL steal = early && early.waitingForSheet && early.shown && !early.closed && !early.finished && !early.revealed;
+    if (steal) {
         early.sheetStoleMenu = YES;
+        sgr_sheetPresenting = YES;
+    }
     %orig;
+    if (!steal) return;
+    // menuClosed can run as the present returns, or on the turn after it. The flag stays up for
+    // that turn and is down before a person can tap outside.
+    dispatch_async(dispatch_get_main_queue(), ^{ sgr_sheetPresenting = NO; });
 }
 %end
 

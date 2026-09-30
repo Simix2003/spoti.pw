@@ -8,6 +8,9 @@ Release Please still owns `CHANGELOG.beta.md`.
 
 ### Features
 
+* a mixed playlist (one whose curation row has the Mix pill) sweeps a highlight across the white Play capsule; Reduce Motion draws nothing, and the sweep stops while the capsule is off screen (`PlaylistMenu.x`, `PlaylistHeader.x`, `SGRActionRow.m`) ([55f0102](https://github.com/Simix2003/spoti.pw/commit/55f0102edeadc31e4c146f729326fa3791a2cb60))
+* the first touch on the Now Playing time bar shows a system slider thumb and forwards the drag to Spotify's own slider; `trackConfiguration` is not declared in this checkout, so the system default is left in place and the thumb hides again when the finger lifts (`PlayerControls.x`) ([63f007b](https://github.com/Simix2003/spoti.pw/commit/63f007b419591796c040c75435eb1a33e51529dd))
+
 ### Fixes
 
 * with the Apple Music style player, fewer Navbar tabs (e.g. Create hidden) keep a normal width and leave a gap before the trailing Search circle, instead of stretching across the bar; each inline tab uses `UITabPlacementFixed` and the bar's `itemPositioning` is set to `UITabBarItemPositioningCentered` so Automatic fill does not stretch two tabs across the gap to Search ([7eb7032](https://github.com/Simix2003/spoti.pw/commit/7eb70328be8ad569229ae18f9752d344d2fec3ef))
@@ -22,6 +25,9 @@ Release Please still owns `CHANGELOG.beta.md`.
 * an upward drag settles the mini player above the tab bar without the list having to reach the top, and a finger lifted while the capsule is between the inline slot and that slot snaps it up; the Search circle no longer turns on UIKit's search on the empty stand-in page, a tap on it is forwarded to Spotify's tab with the bar briefly touchable, and the glass rim no longer takes the trailing circle (`TabBar.x`, `SearchField.x`) ([75917ec](https://github.com/Simix2003/spoti.pw/commit/75917ecd45111e1498ac587237b94ef5fca538f4))
 * the Now Playing ⋯ keeps Spotify's sheet hidden while the glass menu is up; the sheet is claimed as its present begins, even when its context menu is not in the hierarchy yet, and it is not shown on top of the menu (`PlayerMenu.x`) ([81314d6](https://github.com/Simix2003/spoti.pw/commit/81314d63120c7a446e52c71ad61420c4458bc502))
 * Settings > Mod shows a Build row with the branch and short commit next to Version, and the same string is logged once at startup; `version.txt` is unchanged, and a build without the git stamp says unknown (`tweak/Makefile`, `AboutSettings.m`) ([da2aec6](https://github.com/Simix2003/spoti.pw/commit/da2aec644b492efaf8518dc1f5594f59b819bdba))
+* hiding a navbar tab resizes the glass bar to the remaining tabs; the list marks each item shown or hidden so Spotify's layout cannot put a hidden tab back, and the bar's frame uses the slot measured when more tabs were showing (`Navbar.x`, `TabBar.x`) ([6db79de](https://github.com/Simix2003/spoti.pw/commit/6db79de51b6f6bba6658987c7144abdd1582b0a9))
+* one tap outside the Now Playing ⋯ closes the glass menu; the reopen that puts the menu back only runs while Spotify's sheet is still being presented, and the hidden sheet's container no longer takes that tap (`PlayerMenu.x`) ([3360a63](https://github.com/Simix2003/spoti.pw/commit/3360a63b3182b29f8137aec43555ee02b2380a1f))
+* an upward drag settles the mini player above the tab bar without the list reaching the top; the scroll view stays unlinked and the capsule's frame is moved above the bar until a downward drag arms minimize again, with `tab bar:` logs of offset, trait and chosen state (`TabBar.x`) ([4c3a339](https://github.com/Simix2003/spoti.pw/commit/4c3a3393ee7a80bfeecd7e003e887b387766a57a))
 
 ### Documentation
 
@@ -30,6 +36,7 @@ Release Please still owns `CHANGELOG.beta.md`.
 * CarPlay is documented as research only for a sideloaded tweak: no restricted entitlement, no CarPlay scene, and `LockScreenLyrics.x` already puts the current line in `MPMediaItemPropertyArtist` when Spotify's own session is up (`docs/carplay-notes.md`) ([02cc72f](https://github.com/Simix2003/spoti.pw/commit/02cc72f58591030528a9800e1b8a322240d259e6))
 * the redesign is documented as having no per-song downloaded badge; playlist and album rows are Spotify's cells restyled without a download glyph, and only the entity-level download button is restyled (`SGRDownload.m`) ([370a3bc](https://github.com/Simix2003/spoti.pw/commit/370a3bc271ddfbeb74a8a94ced581667c8970814))
 * each beta-simix task is given one shape in this changelog, with user-facing text, a technical note, and a linked commit ([69b8a5d](https://github.com/Simix2003/spoti.pw/commit/69b8a5d9cef86ac60ca401967fddc7dffa5b4cc5))
+* round 2 is planned from the device notes on `9b7d975` before the code changes: navbar width, Now Playing dismiss, mix shimmer, scrubber thumb, and mini player placement (`docs/round2-plan.md`) ([1bd21d4](https://github.com/Simix2003/spoti.pw/commit/1bd21d4bf1707e27b3927b48460a7a873c87ad73))
 
 ### Known limitations / not changed
 

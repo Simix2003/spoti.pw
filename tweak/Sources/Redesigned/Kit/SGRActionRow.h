@@ -21,6 +21,9 @@
 @property (nonatomic, copy) UIColor *fillColor;
 // The glyph's and the word's colour; nil is the accent.
 @property (nonatomic, copy) UIColor *contentColor;
+// A highlight that sweeps the capsule while YES. Reduce Motion draws nothing, and the sweep
+// stops while the capsule is out of a window. The playlist sets it when the page has a Mix pill.
+@property (nonatomic) BOOL mixShimmer;
 // Takes the glyph, the word and the language from `source`, and follows the glyph as Spotify swaps it
 // (play becoming pause) without the header laying out again. Cheap to call again on every pass.
 - (void)feedFrom:(UIView *)source;

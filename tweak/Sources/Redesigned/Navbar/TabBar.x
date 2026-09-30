@@ -24,6 +24,32 @@ static char kBarKey, kHostKey;
 static __weak UIView *sg_stockBar;
 static CGFloat sg_room, sg_glassHeight;   // see "room for the glass bar"
 static BOOL sg_inline;                     // see "the tab bar with the mini player"
+// Full bar width divided by the most tabs seen at that width. Later hides fit the glass bar to
+// slot * visible count; the sample is always the unfitted width, so fitting cannot shrink the slot.
+static NSUInteger sg_slotCount;
+static CGFloat sg_slotWidth;
+
+static void noteTabSlot(CGFloat fullWidth, NSUInteger count) {
+    if (count < 2 || fullWidth < 80 || count < sg_slotCount) return;
+    sg_slotCount = count;
+    sg_slotWidth = fullWidth / (CGFloat)count;
+}
+
+static CGFloat fittedTabWidth(NSUInteger count, CGFloat fullWidth) {
+    if (sg_slotWidth < 1 || !count) return fullWidth;
+    return MIN(fullWidth, sg_slotWidth * (CGFloat)count);
+}
+
+static void logTabFit(NSUInteger count, CGFloat fullWidth, CGFloat fitted, NSString *where) {
+    static NSUInteger loggedCount;
+    static CGFloat loggedFit;
+    static NSString *loggedWhere;
+    if (count == loggedCount && fabs(fitted - loggedFit) < 0.5 && [where isEqualToString:loggedWhere]) return;
+    loggedCount = count;
+    loggedFit = fitted;
+    loggedWhere = where;
+    SGLog(@"tab bar: %lu tabs, full %.0f fitted %.0f slot %.1f (%@)", (unsigned long)count, fullWidth, fitted, sg_slotWidth, where);
+}
 
 @interface SGRSystemTabBar : UITabBar <UITabBarDelegate, UIGestureRecognizerDelegate>
 @property (nonatomic, weak) UIView *stockBar;
@@ -40,7 +66,10 @@ static void syncBar(UIView *stockBar);
 static NSArray<UIView *> *tabItems(UIView *tabBar) {
     NSMutableArray<UIView *> *items = [NSMutableArray array];
     for (UIView *item in SGRowIn(tabBar).arrangedSubviews) {
-        if (!item.hidden && item.bounds.size.width >= 20) [items addObject:item];
+        // The navbar list's mark, not hidden alone: Spotify's layout pass turns hidden back off
+        // and the glass bar would keep the tab it was told to drop.
+        if (!SGRNavbarShowsItem(item) || item.hidden || item.bounds.size.width < 20) continue;
+        [items addObject:item];
     }
     return [items sortedArrayUsingComparator:^NSComparisonResult(UIView *a, UIView *b) {
         return [@(SGFrameIn(a, tabBar).origin.x) compare:@(SGFrameIn(b, tabBar).origin.x)];
@@ -526,7 +555,12 @@ static void syncBar(UIView *stockBar) {
     CGFloat height = MAX(bounds.size.height, glassHeight(bar, stockBar));
     CGRect frame = CGRectMake(0, CGRectGetMaxY(bounds) - height, width, height);
     if (!CGRectEqualToRect(host.frame, frame)) host.frame = frame;
-    if (!CGRectEqualToRect(bar.frame, host.bounds)) bar.frame = host.bounds;
+    noteTabSlot(width, sources.count);
+    CGFloat fit = fittedTabWidth(sources.count, width);
+    if (sg_slotWidth > 1 && fabs(bar.itemWidth - sg_slotWidth) > 0.5) bar.itemWidth = sg_slotWidth;
+    CGRect barFrame = CGRectMake(round((width - fit) / 2), 0, fit, host.bounds.size.height);
+    if (!CGRectEqualToRect(bar.frame, barFrame)) bar.frame = barFrame;
+    logTabFit(sources.count, width, fit, @"bar");
     if (host.superview != stockBar) [stockBar addSubview:host];
     else if (stockBar.subviews.lastObject != host) [stockBar bringSubviewToFront:host];
     logBarOnce(bar);
@@ -580,9 +614,8 @@ static __weak UIScrollView *sg_pageScroll;
 // page is selected, not when a page names another one later (simulator: toggling the behaviour or an
 // appearance pass on the page do not do it), so the selection goes to another tab and back, unseen.
 static BOOL sg_flipping;
-// While an upward drag is settling the bar above the tabs, the page's scroll view is unlinked so
-// UIKit cannot keep a fractional minimize tied to the offset. nameScrollView would put it straight
-// back; it waits out that one turn.
+// While the accessory is pinned above the bar, the page's scroll view stays unlinked. Linking it
+// again before a downward drag is what put the capsule straight back inline (the offset is not 0).
 static BOOL sg_holdScrollLink;
 static void searchPageScroll(void);
 
@@ -697,16 +730,30 @@ static void nameScrollView(void) {
 
 
 @implementation SGRInlineTabs {
-    BOOL _expandHeld;
+    BOOL _placedAbove;
     BOOL _dragMayMinimize;
     CGFloat _dragAnchor;
 }
 
-// UIKit's OnScrollDown minimizes on the way down and only comes back at the top of the list
-// (iOS 26: the bar stays minimized through an upward scroll that never reaches offset 0).
-// Never puts it back now; the next downward drag arms OnScrollDown again so minimize still works.
+// UIKit's OnScrollDown minimizes on the way down and only comes back at the top of the list.
+// Switching the behavior, or putting the accessory back and linking the scroll view again on the
+// next turn, left it inline (a6c8575, 75917ec). An upward drag pins the capsule's own frame
+// above the bar and leaves the scroll view unlinked until a downward drag.
 static const CGFloat kExpandTravel = 28;
 static const CGFloat kExpandVelocity = 350;
+
+- (NSString *)accessoryTrait {
+    if (@available(iOS 26.0, *)) {
+        if (!self.bottomAccessory) return @"no-accessory";
+        return self.minimized ? @"inline" : @"expanded";
+    }
+    return @"none";
+}
+
+- (void)logDecision:(NSString *)state scroll:(UIScrollView *)scroll {
+    CGFloat offset = scroll ? [self cappedOffsetOf:scroll] : 0;
+    SGLog(@"tab bar: offset %.0f trait %@ state %@", offset, [self accessoryTrait], state);
+}
 
 - (CGFloat)cappedOffsetOf:(UIScrollView *)scroll {
     CGFloat top = -scroll.adjustedContentInset.top;
@@ -718,55 +765,65 @@ static const CGFloat kExpandVelocity = 350;
     return y;
 }
 
-- (void)expandForPartialDrag {
+// The glass around the mini player, not an ancestor as wide as the tab row.
+- (UIView *)accessoryCapsule {
     if (@available(iOS 26.0, *)) {
-        if (!self.minimized) return;
-        _expandHeld = YES;
-        if (self.tabBarMinimizeBehavior == UITabBarMinimizeBehaviorNever) return;
-        self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorNever;
-        SGLog(@"tab bar: expands on a partial upward drag");
+        UIView *mini = self.bottomAccessory.contentView;
+        if (!mini.superview) return nil;
+        UIView *capsule = mini;
+        for (UIView *v = mini.superview; v && v != self.view; v = v.superview) {
+            CGFloat dw = v.bounds.size.width - mini.bounds.size.width;
+            CGFloat dh = fabs(v.bounds.size.height - mini.bounds.size.height);
+            if (dh >= 28 || dw < -12 || dw > 80) break;
+            capsule = v;
+        }
+        return capsule;
     }
+    return nil;
 }
 
-// OnScrollDown only finishes the expand when the offset is back at the top, and switching the
-// behavior to Never leaves a drag that ended partway sitting between the inline slot and the slot
-// above the bar. Unlinking the scroll view drops that fractional progress; Never then keeps the
-// accessory up. The link comes back on the next turn so a later downward drag can still minimize.
-- (void)settleAboveBar {
+- (void)pinAccessoryFrame {
+    if (!_placedAbove) return;
+    static BOOL pinning;
+    if (pinning) return;
+    UIView *capsule = [self accessoryCapsule];
+    if (!capsule.superview || !self.tabBar.window) return;
+    CGRect bar = [self.tabBar convertRect:self.tabBar.bounds toView:capsule.superview];
+    CGRect frame = capsule.frame;
+    CGFloat overflow = CGRectGetMaxY(frame) - (CGRectGetMinY(bar) - 8);
+    if (overflow <= 1) return;
+    frame.origin.y -= overflow;
+    pinning = YES;
+    capsule.frame = frame;
+    pinning = NO;
+}
+
+// Never and an unlinked scroll view keep UIKit from driving the capsule. The frame is ours until
+// a downward drag. The accessory is not removed and put back, and the link is not restored here.
+- (void)pinAbove:(UIScrollView *)scroll {
     if (@available(iOS 26.0, *)) {
         if (!self.bottomAccessory) return;
-        BOOL needMove = self.minimized || [self accessoryIsPartway];
-        _expandHeld = YES;
+        BOOL was = _placedAbove;
+        _placedAbove = YES;
         self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorNever;
-        if (!needMove) {
-            SGLog(@"tab bar: stays above the bar");
-            return;
-        }
         UIViewController *page = self.selectedViewController;
-        UIScrollView *scroll = sg_pageScroll;
+        if (!scroll) scroll = sg_pageScroll;
         if (!scroll) scroll = [page contentScrollViewForEdge:NSDirectionalRectEdgeBottom];
         if (page && scroll) {
             sg_holdScrollLink = YES;
             [page setContentScrollView:nil forEdge:NSDirectionalRectEdgeAll];
         }
-        SGLog(@"tab bar: settles above the bar (minimized %d)", self.minimized);
-        __weak typeof(self) weakSelf = self;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            SGRInlineTabs *strong = weakSelf;
-            if (!strong) {
-                sg_holdScrollLink = NO;
-                return;
-            }
-            if (strong.minimized && strong.bottomAccessory) {
-                UITabAccessory *accessory = strong.bottomAccessory;
-                [strong setBottomAccessory:nil animated:NO];
-                [strong setBottomAccessory:accessory animated:YES];
-                SGLog(@"tab bar: accessory put back above the bar");
-            }
-            sg_holdScrollLink = NO;
-            if (strong->_expandHeld && page && scroll) [page setContentScrollView:scroll forEdge:NSDirectionalRectEdgeAll];
-        });
+        [self pinAccessoryFrame];
+        if (!was) [self logDecision:@"pinned-above" scroll:scroll];
     }
+}
+
+- (void)expandForPartialDrag {
+    [self pinAbove:sg_pageScroll];
+}
+
+- (void)settleAboveBar {
+    [self pinAbove:sg_pageScroll];
 }
 
 // Straddling the top of the tab bar: not in the slot above it, and not in the inline slot.
@@ -783,26 +840,26 @@ static const CGFloat kExpandVelocity = 350;
     return NO;
 }
 
-- (void)armMinimizeAfterExpand {
-    if (!_expandHeld) return;
-    _expandHeld = NO;
-    if (@available(iOS 26.0, *)) {
-        if (self.tabBarMinimizeBehavior == UITabBarMinimizeBehaviorOnScrollDown) return;
+- (void)armMinimizeAfterExpand:(UIScrollView *)scroll {
+    if (!_placedAbove) return;
+    _placedAbove = NO;
+    sg_holdScrollLink = NO;
+    if (@available(iOS 26.0, *))
         self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
-        SGLog(@"tab bar: a downward drag may minimize again");
-    }
+    nameScrollView();
+    [self logDecision:@"minimize-armed" scroll:scroll ?: sg_pageScroll];
 }
 
 - (void)notePageDrag:(UIPanGestureRecognizer *)pan {
     UIScrollView *scroll = (UIScrollView *)pan.view;
     if (![scroll isKindOfClass:UIScrollView.class]) return;
     if (pan.state == UIGestureRecognizerStateBegan) {
-        _dragMayMinimize = _expandHeld;
+        _dragMayMinimize = _placedAbove;
         _dragAnchor = [self cappedOffsetOf:scroll];
-        // Arm minimize at the start of a downward flick so that drag still minimizes, the way it
-        // did before an early expand switched the behavior to Never.
         CGPoint velocity = [pan velocityInView:scroll];
-        if (_dragMayMinimize && velocity.y < -80 && fabs(velocity.y) > fabs(velocity.x)) [self armMinimizeAfterExpand];
+        // A downward flick releases the pin at the start, so this drag can still minimize.
+        if (_dragMayMinimize && velocity.y < -80 && fabs(velocity.y) > fabs(velocity.x)) [self armMinimizeAfterExpand:scroll];
+        else [self logDecision:_placedAbove ? @"pinned-above" : @"uikit" scroll:scroll];
         return;
     }
     CGFloat dy = [self cappedOffsetOf:scroll] - _dragAnchor;
@@ -816,13 +873,14 @@ static const CGFloat kExpandVelocity = 350;
         BOOL downward = dy > 8 || (vertical && velocity.y < -120);
         // A downward drag is left to minimize. An upward one, or a finger lifted while the capsule
         // is between the two slots, snaps it above the bar instead of leaving it halfway.
-        if (upward || ([self accessoryIsPartway] && !downward)) [self settleAboveBar];
-        else if (_dragMayMinimize && (dy > 8 || (vertical && velocity.y < -kExpandVelocity))) [self armMinimizeAfterExpand];
+        if (upward || ([self accessoryIsPartway] && !downward)) [self pinAbove:scroll];
+        else if (_placedAbove && downward) [self armMinimizeAfterExpand:scroll];
+        else [self logDecision:_placedAbove ? @"pinned-above" : @"uikit" scroll:scroll];
         return;
     }
     if (pan.state != UIGestureRecognizerStateChanged) return;
-    if (pulledUp || flungUp) [self expandForPartialDrag];
-    if (_dragMayMinimize && (dy > 8 || (vertical && velocity.y < -kExpandVelocity))) [self armMinimizeAfterExpand];
+    if (pulledUp || flungUp) [self pinAbove:scroll];
+    if (_placedAbove && _dragMayMinimize && (dy > 8 || (vertical && velocity.y < -kExpandVelocity))) [self armMinimizeAfterExpand:scroll];
 }
 
 - (instancetype)init {
@@ -851,6 +909,36 @@ static const CGFloat kExpandVelocity = 350;
     tap.cancelsTouchesInView = NO;
     [self.tabBar addGestureRecognizer:tap];
     [self playerStateDidChange:SGPlayerState()];
+}
+
+// The controller's bar is the full screen wide. Fewer tabs keep the slot measured when more of them
+// were showing, and the glass bar's frame shrinks to that, centered. Minimized, the frame stays
+// UIKit's: the inline capsule needs the leading tab and the trailing circle at the screen edges.
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    static BOOL fitting;
+    if (!fitting && _placedAbove) [self pinAccessoryFrame];
+    if (fitting) return;
+    NSUInteger count = self.sources.count;
+    CGFloat full = self.view.bounds.size.width;
+    if (count < 2 || full < 80) return;
+    noteTabSlot(full, count);
+    UITabBar *bar = self.tabBar;
+    if (self.minimized) {
+        if (bar.itemWidth != 0) bar.itemWidth = 0;
+        return;
+    }
+    CGFloat fit = fittedTabWidth(count, full);
+    if (sg_slotWidth > 1 && fabs(bar.itemWidth - sg_slotWidth) > 0.5) bar.itemWidth = sg_slotWidth;
+    CGFloat x = round((full - fit) / 2);
+    if (fabs(bar.frame.size.width - fit) < 0.5 && fabs(bar.frame.origin.x - x) < 0.5) return;
+    fitting = YES;
+    CGRect frame = bar.frame;
+    frame.origin.x = x;
+    frame.size.width = fit;
+    bar.frame = frame;
+    fitting = NO;
+    logTabFit(count, full, fit, @"inline");
 }
 
 // The accessory is inline beside the minimized bar; with no track there is no accessory and no telling.
