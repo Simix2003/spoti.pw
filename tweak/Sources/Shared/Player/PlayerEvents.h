@@ -8,6 +8,9 @@
 extern NSString *const SGPlayerTransitionNotification;
 extern NSString *const SGPlayerTransitionEndedNotification;
 CFTimeInterval SGPlayerTransitionEnds(void);
+// When the current transition began (CACurrentMediaTime), or 0 when none has. A tap can tell a
+// leftover close from the present it just started.
+CFTimeInterval SGPlayerTransitionBegan(void);
 
 // The full player's own background controller (NowPlaying_ScrollImpl.NPVBackgroundViewController),
 // the same one whose appearance announces the transition. On screen from viewDidAppear until

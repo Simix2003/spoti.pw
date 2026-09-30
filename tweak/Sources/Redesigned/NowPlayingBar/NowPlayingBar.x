@@ -134,6 +134,10 @@ static CFTimeInterval sg_openBegan;
 static BOOL sg_pursuing;
 static const NSUInteger kOpenTries = 4;
 
+// Retries never postpone the first fire. A leftover close, or a present that never reached
+// viewDidAppear, used to sit in this function for up to a second (the stuck-transition watchdog)
+// before Spotify's tap ran, which is the open that feels late. A transition that began with this
+// tap is the present itself: firing again would toggle the player, so that one is given a moment.
 static void pursueOpen(NSUInteger token, NSUInteger fires) {
     if (token != sg_openToken) return;
     if (SGPlayerIsOnScreen()) {
@@ -141,37 +145,29 @@ static void pursueOpen(NSUInteger token, NSUInteger fires) {
         SGLog(@"mini player: open succeeded");
         return;
     }
-    // A transition left over from an earlier present or dismiss is not this tap. A young one is.
-    SGPlayerTransitionResetStuck();
-    if (SGPlayerIsOnScreen()) {
-        sg_pursuing = NO;
-        SGLog(@"mini player: open succeeded");
-        return;
-    }
-    CFTimeInterval age = CACurrentMediaTime() - sg_openBegan;
-    BOOL waiting = SGPlayerIsAppearing() || SGPlayerTransitionEnds() > 0;
-    if (waiting && age < 1) {
-        if (age < 0.3) SGLog(@"mini player: open waiting %.2fs (appearing %d)", age, SGPlayerIsAppearing());
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            pursueOpen(token, fires);
-        });
-        return;
-    }
-    if (waiting) {
-        SGLog(@"mini player: open retry, the transition did not put the player up");
-        SGPlayerTransitionResetStuck();
-    }
     if (fires >= kOpenTries) {
         sg_pursuing = NO;
         SGLog(@"mini player: open gave up after %lu tries", (unsigned long)fires);
         logMissingOpen(sg_barContainer);
         return;
     }
+    CFTimeInterval began = SGPlayerTransitionBegan();
+    BOOL fromThisTap = fires > 0 && began >= sg_openBegan - 0.02 && (SGPlayerIsAppearing() || SGPlayerTransitionEnds() > 0);
+    if (fromThisTap && CACurrentMediaTime() - began < 0.8) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            pursueOpen(token, fires);
+        });
+        return;
+    }
+    if (fromThisTap) {
+        SGLog(@"mini player: open retry, the transition did not put the player up");
+        SGPlayerTransitionResetStuck();
+    }
     BOOL fired = fireOpen(sg_barContainer);
     SGLog(@"mini player: open try %lu %@", (unsigned long)(fires + 1), fired ? @"fired Spotify's tap" : @"no wide tap");
-    // A tap that ran is given time to present. Firing again in the same beat would be a second tap,
-    // and Spotify's bar toggles the player. A missing recognizer is tried again once layout can run.
-    NSTimeInterval delay = fired ? 0.35 : (fires == 0 ? 0.05 : 0.3);
+    // A tap that ran is given time to present before another, which would toggle the player.
+    // A missing recognizer is tried again on the next layout, without waiting out the watchdog.
+    NSTimeInterval delay = fired ? 0.45 : 0.05;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         pursueOpen(token, fires + 1);
     });
@@ -183,7 +179,11 @@ BOOL SGROpenPlayerFromBar(void) {
         SGLog(@"mini player: the player is already on screen");
         return YES;
     }
-    if (sg_pursuing && CACurrentMediaTime() - sg_openBegan < 1) {
+    // A second tap while the present from this one is in flight would toggle the player shut.
+    // The window is the present, not the old one-second wait that also blocked the first fire.
+    if (sg_pursuing && CACurrentMediaTime() - sg_openBegan < 0.45
+        && SGPlayerTransitionBegan() >= sg_openBegan - 0.02
+        && (SGPlayerIsAppearing() || SGPlayerTransitionEnds() > 0)) {
         SGLog(@"mini player: open already in flight");
         return YES;
     }

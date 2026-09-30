@@ -19,6 +19,10 @@ CFTimeInterval SGPlayerTransitionEnds(void) {
     return sg_transitionEnds > CACurrentMediaTime() ? sg_transitionEnds : 0;
 }
 
+CFTimeInterval SGPlayerTransitionBegan(void) {
+    return sg_transitionBegan;
+}
+
 BOOL SGPlayerIsOnScreen(void) {
     return sg_onScreen;
 }
