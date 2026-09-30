@@ -121,7 +121,7 @@ static void mixCopy(UIView *pill, NSString **wordOut, NSString **detailOut, BOOL
     for (NSString *line in lines) {
         if (word && ![line isEqualToString:word] && (!detail || line.length > detail.length)) detail = line;
     }
-    BOOL on = (pill.accessibilityTraits & UIAccessibilityTraitSelected) != 0;
+    __block BOOL on = (pill.accessibilityTraits & UIAccessibilityTraitSelected) != 0;
     if ([pill isKindOfClass:UIControl.class] && ((UIControl *)pill).selected) on = YES;
     if (!on) {
         SGForEachView(pill, ^(UIView *v) {
