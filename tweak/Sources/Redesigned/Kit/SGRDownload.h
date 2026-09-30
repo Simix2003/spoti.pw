@@ -9,6 +9,8 @@
 // keeps `currentState` and `progress` in stored properties the runtime lists by name (Swift field metadata:
 // GranularDownloadButton { currentState: GranularDownloadButtonState, progress: Optional<8 bytes> }, the
 // state being none, waiting, downloading, downloadingEndless, downloaded, error in that order).
+// When the identifier is DownloadButton.Granular.Downloaded and the model byte disagrees, the
+// identifier wins. A tap on that state does not fire the button (it was starting the download again).
 //
 // Threading: main thread only.
 #import <UIKit/UIKit.h>

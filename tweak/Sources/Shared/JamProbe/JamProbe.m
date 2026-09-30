@@ -19,7 +19,7 @@
 #define SG_BUILD_BRANCH "unknown"
 #endif
 
-static const NSTimeInterval kDelay = 3;
+static const NSTimeInterval kDelay = 5;
 static const NSTimeInterval kBudget = 1.6;
 static const NSUInteger kPerPattern = 40;
 static const NSUInteger kDumpCap = 200;
@@ -890,7 +890,7 @@ void SGJamProbeRun(void) {
         return;
     }
     sg_busy = YES;
-    toast(@"Open the Jam screen. Probe runs in 3 seconds.", NO);
+    toast(@"Open the Jam screen. Probe runs in 5 seconds.", NO);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         runNow();
     });

@@ -10,7 +10,7 @@ The file is `Documents/spotifyplus-jam-probe-<yyyyMMdd-HHmmss>.txt`. One line is
 2. Open Spotify’s settings, then **Mod Settings**, then **Mod**.
 3. In the **Debug** section, open **Jam probe**.
 4. Tap **Run Jam probe now**.
-5. Within 3 seconds, switch back to the Jam screen (and the queue). The probe reads whatever is on screen when the 3 seconds end.
+5. Within 5 seconds, switch back to the Jam screen (and the queue). The probe reads whatever is on screen when the 5 seconds end.
 6. Wait for the toast that says the probe was saved.
 7. Go back to **Jam probe** and tap **Share last probe**. AirDrop or save the file.
 

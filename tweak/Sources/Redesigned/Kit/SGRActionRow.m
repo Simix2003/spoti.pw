@@ -50,6 +50,7 @@ static NSString *wordIn(UIView *button) {
     UIImageView *_glyph;
     UILabel *_title;
     __weak UIImageView *_watchedGlyph;
+    UIView *_shineHost;
     CAGradientLayer *_shine;
     BOOL _mixShimmer;
 }
@@ -71,40 +72,49 @@ static NSString *wordIn(UIView *button) {
     return _mixShimmer;
 }
 
-// A bright band across the white capsule. A display link is not used: one capped at 60 Hz drags
-// the player's transitions, and this capsule is not on the player anyway.
+// A dark band across the white capsule. White on white was invisible on device. A display link is
+// not used: one capped at 60 Hz drags the player's transitions, and this capsule is not on the player.
 - (void)sgr_updateShimmer {
     BOOL reduce = UIAccessibilityIsReduceMotionEnabled();
-    BOOL show = _mixShimmer && self.window && !reduce && !CGRectIsEmpty(self.bounds);
+    BOOL empty = self.bounds.size.width < 8 || self.bounds.size.height < 8;
+    BOOL show = _mixShimmer && self.window && !reduce && !empty;
+    static NSString *lastWhy;
+    NSString *why = !_mixShimmer ? @"off" : !self.window ? @"no window" : reduce ? @"reduce motion" : empty ? @"empty bounds" : @"on";
+    if (![why isEqualToString:lastWhy]) {
+        lastWhy = why;
+        SGLog(@"redesign playlist: mix shimmer %@ (bounds %@, window %d)", why, NSStringFromCGRect(self.bounds), self.window != nil);
+    }
     if (!show) {
         [_shine removeAllAnimations];
         [_shine removeFromSuperlayer];
         _shine = nil;
+        [_shineHost removeFromSuperview];
+        _shineHost = nil;
         if (!_mixShimmer) self.layer.masksToBounds = NO;
-        if (_mixShimmer && self.window && reduce) {
-            static BOOL logged;
-            if (!logged) {
-                logged = YES;
-                SGLog(@"redesign playlist: mix shimmer skipped, reduce motion");
-            }
-        }
         return;
     }
     self.layer.masksToBounds = YES;
     CGRect bounds = self.bounds;
     CGFloat band = MAX(28, bounds.size.width * 0.42);
-    if (!_shine) {
+    if (!_shineHost) {
+        _shineHost = [UIView new];
+        _shineHost.userInteractionEnabled = NO;
+        _shineHost.backgroundColor = UIColor.clearColor;
+        [self addSubview:_shineHost];
         _shine = [CAGradientLayer layer];
+        // The capsule is solid white. A white highlight does not show on it; a soft black band does.
         _shine.colors = @[
-            (id)[UIColor colorWithWhite:1 alpha:0].CGColor,
-            (id)[UIColor colorWithWhite:1 alpha:0.72].CGColor,
-            (id)[UIColor colorWithWhite:1 alpha:0].CGColor,
+            (id)[UIColor colorWithWhite:0 alpha:0].CGColor,
+            (id)[UIColor colorWithWhite:0 alpha:0.22].CGColor,
+            (id)[UIColor colorWithWhite:0 alpha:0].CGColor,
         ];
         _shine.locations = @[@0.2, @0.5, @0.8];
         _shine.startPoint = CGPointMake(0, 0.35);
         _shine.endPoint = CGPointMake(1, 0.65);
-        [self.layer insertSublayer:_shine atIndex:0];
+        [_shineHost.layer addSublayer:_shine];
     }
+    _shineHost.frame = bounds;
+    [self bringSubviewToFront:_shineHost];
     _shine.bounds = CGRectMake(0, 0, band, bounds.size.height);
     if (![_shine animationForKey:@"sweep"]) {
         _shine.position = CGPointMake(-band, bounds.size.height / 2);
@@ -465,6 +475,12 @@ static BOOL indicatorOn(UIView *button, BOOL *found) {
 }
 
 - (void)sgr_tap {
+    SGRDownloadState download = SGRDownloadNone;
+    CGFloat progress = -1;
+    if (self.source && SGRReadDownload(self.source, &download, &progress) && download == SGRDownloadDownloaded) {
+        SGLog(@"redesign kit: download tap ignored, already downloaded (%@)", self.source.accessibilityIdentifier);
+        return;
+    }
     SGRActivate(self.source);
     // The word is watched where Spotify writes it, but a button that rebuilds its content on the state it
     // just took writes the new word into a label the watch has never seen. So a tap, and only a tap, asks

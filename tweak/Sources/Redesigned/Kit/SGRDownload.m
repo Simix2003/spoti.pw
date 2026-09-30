@@ -66,7 +66,10 @@ BOOL SGRReadDownload(UIView *source, SGRDownloadState *state, CGFloat *progress)
         SGRDownloadNone, SGRDownloadWaiting, SGRDownloadDownloading, SGRDownloadWaiting, SGRDownloadDownloaded, SGRDownloadError,
     };
     SGRDownloadState modelState = modelled ? fromModel[*current] : SGRDownloadNone;
-    SGRDownloadState result = modelled ? modelState : said;
+    // The identifier Downloaded is the on-phone state. When the model byte disagrees it has been
+    // drawing the Download arrow, and the tap then started the download again.
+    BOOL downloadedWins = named && said == SGRDownloadDownloaded && modelled && modelState != SGRDownloadDownloaded;
+    SGRDownloadState result = downloadedWins ? SGRDownloadDownloaded : (modelled ? modelState : said);
     if (!modelled && !named) return NO;
 
     CGFloat value = -1;
@@ -91,13 +94,14 @@ BOOL SGRReadDownload(UIView *source, SGRDownloadState *state, CGFloat *progress)
               current ? *current : -1, stored ? (stored[8] == 0 ? @"set" : @"none") : @"unreadable",
               button.accessibilityLabel, button.accessibilityValue);
     }
-    if (modelled && named && modelState != said && !(modelState == SGRDownloadWaiting && said == SGRDownloadDownloading)) {
+    if (downloadedWins || (modelled && named && modelState != said && !(modelState == SGRDownloadWaiting && said == SGRDownloadDownloading))) {
         static NSMutableSet<NSString *> *disagreed;
         if (!disagreed) disagreed = [NSMutableSet set];
-        if (![disagreed containsObject:mark]) {
-            [disagreed addObject:mark];
-            SGLog(@"redesign kit: download model says %d where the identifier says %@, the model wins", *current,
-                  button.accessibilityIdentifier);
+        NSString *conflict = [mark stringByAppendingString:downloadedWins ? @" identifier" : @" model"];
+        if (![disagreed containsObject:conflict]) {
+            [disagreed addObject:conflict];
+            SGLog(@"redesign kit: download model says %d where the identifier says %@, the %@ wins", *current,
+                  button.accessibilityIdentifier, downloadedWins ? @"identifier" : @"model");
         }
     }
     if (state) *state = result;
