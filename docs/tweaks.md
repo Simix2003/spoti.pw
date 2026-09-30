@@ -201,12 +201,18 @@ Redesigned:
                   moving -- so it no longer arrives a piece at a time; after 1.2 s it shows whatever is missing, and
                   the back button, being the system's navigation bar, is there throughout
     Navbar/       the glass tab bar (TabBar.x) over its own composition (Navbar.x, NavbarLayout.m) and editor, with the fade to
-                  black over the pages behind the bars that Spotify's bar drew; the glass search field.
-                  Spotify is made to leave the glass bar its height where its own bar is shorter (a phone with a home button,
-                  Offline or Private Session under the bar), so the now playing bar and the pages move up with it. Laid out on
-                  the Mac against harness/tabbar/
+                  black over the pages behind the bars that Spotify's bar drew; the glass search field (SearchField.x).
+                  On iOS 26 the bar is a UITabBarController: the tabs the Navbar list leaves shown sit in the leading
+                  platter with their icon and title, and Search is a trailing UISearchTab circle. Picking Search opens
+                  Spotify's page and asks for its field. The Apple Music style player (on unless turned off, read at
+                  launch) adds the mini player as a UITabAccessory and lets UIKit minimize the bar on scroll; nothing
+                  in the mod slides the platter or sets item widths. Spotify is made to leave the glass bar its height
+                  where its own bar is shorter (a phone with a home button, Offline or Private Session under the bar),
+                  so the now playing bar and the pages move up with it. Laid out on the Mac against harness/tabbar/
     NowPlayingBar/ the glass now playing bar (NowPlayingBar.x), with Spotify's device button on it hidden on request
-                  (BarConnect.x, its own key and its own row on the Player page, apart from the native look's)
+                  (BarConnect.x, its own key and its own row on the Player page, apart from the native look's). With the
+                  Apple Music style player on, the mini player (MiniPlayer.m) is that accessory: a tap opens the full
+                  player through Spotify's own card, and a sideways drag still skips
     Player/       the redesigned full screen player (Player.h lists its files), on Spotify Free's units too (a Free
                   account with pick and shuffle gets NowPlayingReinventFreeMode, whose units are classes of their own
                   around the same elements, and each unit hook covers both); its ⋯ opens a menu the way the
@@ -219,7 +225,9 @@ Redesigned:
                   through that ListRow; a page Spotify pushes onto the sheet (Share's destinations) shows the
                   sheet, and a sheet with no rows within 4 s is shown as it is. It opens on the rows the last
                   menu had, kept across launches, and moves to Spotify's as they come in, a tap meanwhile held
-                  until they do. Always on in the redesign. Tested in the simulator against harness/playermenu/
+                  until they do. The time bar stays white while it is scrubbed. A new song crossfades the field's
+                  artwork once the next cover is the one under the middle of the list, and a sharper read of the
+                  same picture does not fade again. Always on in the redesign. Tested in the simulator against harness/playermenu/
                   With Sing on and its voice model downloaded (Mod Settings > Karaoke, Redesigned/Lyrics/SingSettings.m,
                   both applying at once), its microphone (Redesigned/Lyrics/SGRSingControl.m) sits in the
                   lyrics' bottom trailing corner, opposite their glass button, and goes down with the lines when the
@@ -258,7 +266,13 @@ Redesigned:
                   controls (shuffle, a prominent Play capsule taking its glyph and its word from Spotify's own button,
                   add), the find bar and the curation pills gone, and the track rows on the field with a hairline between them
                   (Playlist.h lists its files). Sort and Mix, the two of those pills the ⋯ menu does not already offer,
-                  are put on that menu's own sheet instead, above Spotify's rows, and fire Spotify's own buttons.
+                  are put on that menu's own sheet instead, above Spotify's rows. Mix is the first of those two
+                  and takes its word, and a second line when the pill already has a longer one, from Spotify's
+                  own pill. Both rows fire Spotify's own buttons. A playlist whose curation row has the Mix pill
+                  draws a soft gradient halo around Play: it turns once every 9 seconds, takes its colours from
+                  the cover when the cover has a few vivid ones, and starts the first time the capsule is on screen.
+                  A download button Spotify already marks downloaded is drawn that way, and a tap on it does not
+                  start the download again.
                   Laid out on the Mac against harness/playlist/
     Album/        the album page laid out the same way, on the page the Creative Work Platform builds rather than the
                   playlist's, so it shares nothing with Playlist/ but the Kit: the cover full bleed dissolving into the
@@ -276,7 +290,9 @@ App:
     Pages.m        the Appearance card with Redesigned UI, the Player and Lyrics pages, which Navbar page opens
     About/         the update check against the repo's GitHub Releases, the Updates page it fills (the state, and
                    the changelog of every release newer than the build, a line per commit) and the sheet a newer
-                   release brings up on its own a few seconds after Spotify opens, once per release; backup, the
+                   release brings up on its own a few seconds after Spotify opens, once per release; the Mod page's
+                   Build row (branch and short commit, `-dirty` when the tree was dirty) and a short on-phone copy
+                   of SGLog that Share logs and Clear logs use; backup, the
                    signing warning and the Mod page with the reset; how the app is signed (Certificate.m: free,
                    paid, enterprise or no profile, sent with the usage ping), and for a free Apple ID a row with
                    the day it runs out and, at most monthly, a certificate sheet worded by spoti.pw/api/certificate

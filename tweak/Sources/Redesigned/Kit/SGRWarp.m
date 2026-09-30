@@ -9,7 +9,10 @@ static const NSUInteger kBlurSide = 128;
 // Drawable pixels per point: the picture is a blur, so a small drawable scaled up by the compositor
 // looks the same and costs a tenth.
 static const CGFloat kPixelsPerPoint = 0.5;
-static const CFTimeInterval kFade = 1.0;
+// How long the blend runs once the new texture is ready, and how long a request may wait before a
+// fade would only show the end of itself (the shrink already took the second).
+static const CFTimeInterval kFade = 0.45;
+static const CFTimeInterval kFadeLate = 1.0;
 static const float kTint[3] = {0.157f, 0.157f, 0.235f}, kTintAmount = 0.15f;
 // The colour's linear luminance is held under this (0.07 with Increase Contrast), so white text keeps
 // better than 5.5:1 at full brightness.
@@ -479,11 +482,11 @@ static NSUInteger sg_costLogs;
     NSData *pixels = _pending;
     _pending = nil;
     CFTimeInterval now = CACurrentMediaTime();
-    BOOL fade = _pendingAnimated && _to && now - _pendingAt < kFade;
+    BOOL fade = _pendingAnimated && _to && now - _pendingAt < kFadeLate;
     id<MTLCommandBuffer> buffer = [gpu.queue commandBuffer];
     if (fade) {
         float shown = [self fadeAt:now];
-        if (shown < 1) {
+        if (shown < 1 && _fadeStart > 0) {
             // Caught halfway through a crossfade: what shows now is what the next one starts from.
             if (!_spare) _spare = blurTexture(gpu.device);
             MTLRenderPassDescriptor *pass = newPass();
@@ -496,7 +499,9 @@ static NSUInteger sg_costLogs;
             _from = _to;
             _to = old;
         }
-        _fadeStart = _pendingAt;
+        // From this frame, not from when the shrink was asked for: that clock was already part
+        // way through, so a new cover appeared as a cut.
+        _fadeStart = now;
     } else {
         _fadeStart = 0;
     }
@@ -547,18 +552,32 @@ static NSUInteger sg_costLogs;
     return _pace == SGRWarpPaceMoving || [self fadeAt:CACurrentMediaTime()] < 1;
 }
 
+// A crossfade wants every frame the screen can give. The slow drift does not. The maximum stays
+// 120 either way: a link capped at 60 drags the player's 120 Hz transitions down with it.
+- (CAFrameRateRange)linkRange {
+    BOOL fading = _fadeStart > 0 && [self fadeAt:CACurrentMediaTime()] < 1;
+    return fading ? CAFrameRateRangeMake(30, 120, 120) : CAFrameRateRangeMake(30, 120, 30);
+}
+
+- (void)applyLinkRange {
+    if (!_link) return;
+    CAFrameRateRange range = [self linkRange];
+    CAFrameRateRange have = _link.preferredFrameRateRange;
+    if (have.minimum == range.minimum && have.maximum == range.maximum && have.preferred == range.preferred) return;
+    _link.preferredFrameRateRange = range;
+}
+
 - (void)updateLink {
     BOOL wants = [self wantsLink];
     if (wants && !_link) {
         SGRWarpTicker *ticker = [SGRWarpTicker new];
         ticker.layer = self;
         _link = [CADisplayLink displayLinkWithTarget:ticker selector:@selector(tick:)];
-        // Slow drift needs no more than 30 a second, and a range reaching 120 never holds the
-        // player's 120 Hz transitions down.
-        _link.preferredFrameRateRange = CAFrameRateRangeMake(30, 120, 30);
+        _link.preferredFrameRateRange = [self linkRange];
         _link.paused = YES;
         [_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     }
+    [self applyLinkRange];
     if (!_link || _link.paused == !wants) return;
     _link.paused = !wants;
     _lastTick = 0;
@@ -574,6 +593,8 @@ static NSUInteger sg_costLogs;
         _lastTick = now;
     }
     [self drawAt:now];
+    // drawAt ends a fade that just finished; the preferred rate drops back to the drift on that frame.
+    [self applyLinkRange];
     if (![self wantsLink]) [self updateLink];
 }
 

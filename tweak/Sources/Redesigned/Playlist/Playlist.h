@@ -12,7 +12,7 @@
 //     PlaylistRows.x    the track rows on the field with no surface of their own, rounded artwork, a
 //                       hairline between them, and the curation pills collapsed
 //     PlaylistMenu.x    Sort and Mix, the two of the curation pills the ⋯ menu does not already offer,
-//                       put on that menu's own sheet
+//                       put on that menu's own sheet, Mix first and labelled from the pill
 //
 // Every hook installs only while Redesigned UI is on (SGRedesignedUI); the native look's do not then.
 // Threading: main thread only.
@@ -28,6 +28,14 @@ void SGRPlaylistTakeCuration(UIView *cell);
 // And keeps Spotify's own Sort button from the header's find-on-page toolbar, which sorts the same list
 // and, unlike the pill, is in the header rather than in a cell the list reuses.
 void SGRPlaylistTakeSort(UIView *page, UIView *button);
+// YES when this page's curation row has Spotify's Mix pill. That is the mixed playlist the Play
+// capsule draws a glow around; a playlist without the pill is not. NO until the row has been seen.
+BOOL SGRPlaylistIsMixed(UIView *page);
+// YES once the curation row has been found on this page, whether or not it has a Mix pill.
+BOOL SGRPlaylistCurationSeen(UIView *page);
+// Asks the header's Play capsule to read the mix pill again. The row is often measured after the
+// header's first pass, which left the glow off until a scroll laid the header out a second time.
+void SGRPlaylistRefreshPlayGlow(UIView *page);
 
 // The playlist page `view` is on, or nil: SPTFreeTierPlaylistEncoreHeaderViewController's own view, the one
 // the tree names PL.Header, for anything under the header, and FTPViewController's view for the list.

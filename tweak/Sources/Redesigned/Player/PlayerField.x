@@ -43,10 +43,25 @@ SGRArtworkField *SGRPlayerField(void) {
 
 #pragma mark - the field
 
+// The part of an identity before '#': one picture, whatever the resolution it was read at.
+static NSString *pictureKey(NSString *identity) {
+    if (!identity.length) return nil;
+    NSRange hash = [identity rangeOfString:@"#" options:NSBackwardsSearch];
+    return hash.location == NSNotFound ? identity : [identity substringToIndex:hash.location];
+}
+
+static NSString *sg_shownPicture;
+
 static void showArtwork(SGRArtworkField *field, BOOL animated) {
     NSString *identity = nil;
     UIImage *image = SGRNowPlayingArtwork(NULL, &identity);
-    if (field && image) [field setArtwork:image identity:identity animated:animated];
+    if (!field || !image) return;
+    NSString *key = pictureKey(identity);
+    // A sharper read of the picture already on screen is not another song, and a second crossfade
+    // there read as the artwork restarting. A different picture fades.
+    BOOL song = key.length && ![key isEqualToString:sg_shownPicture];
+    if (key) sg_shownPicture = key;
+    [field setArtwork:image identity:identity animated:animated && song];
 }
 
 static SGRArtworkField *fieldIn(UIView *plane) {
@@ -112,7 +127,10 @@ static void keepOnTop(UIView *plane, NSArray<UIView *> *views) {
 // The picture of the cell under the middle of the list once it has settled: mid swipe the middle is
 // between two tracks.
 static UIImage *settledCover(UIScrollView *list) {
-    if (!list.window || list.isDragging || list.isDecelerating) return nil;
+    // Still under a finger the middle sits between two songs. Once a cell is on the middle, the
+    // new cover is the one to fade to, including while the list is still decelerating: waiting
+    // for it to rest held the field on the previous picture and then cut.
+    if (!list.window || list.isDragging) return nil;
     CGFloat middle = CGRectGetMidX(list.bounds);
     for (UIView *cell in list.subviews) {
         if (cell.hidden || ![cell isKindOfClass:UICollectionViewCell.class] || fabs(CGRectGetMidX(cell.frame) - middle) > 1) continue;

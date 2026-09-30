@@ -28,6 +28,13 @@
 // keeps are all Spotify's; the words are read off the pills for the same reason. The pills sit in a list
 // cell closed up to nothing, which the page hands over as it lays out (SGRPlaylistTakeCuration) and which
 // is held from the page, so they are still there to fire once the list has scrolled past them.
+//
+// Mix is the first of the two. On the pill row it sat beside Add, and once that row is closed up the only
+// copy is this sheet, where it used to read as a second Sort: the same height, under Sort, with a slider
+// glyph. The title is the shortest string already on the pill (the word it draws, "Mix" or "Mixa"), and a
+// longer one Spotify already wrote on it ("Playlist mixata") is the line under that, so the status is not
+// the only thing the row says. Nothing is translated here. A selected pill is drawn as on. The tap is
+// still the pill's.
 #import "Core/SGCore.h"
 #import "Redesigned/Kit/SGRKit.h"
 #import "Playlist.h"
@@ -41,7 +48,7 @@ static NSString *const kMixIdentifier = @"ListPlatform.ToolbarActions.MixButton"
 
 // The sheet's own measures and type: this draws on Spotify's sheet, not on a page of the redesign's, so it
 // takes the sheet's side margin and row height rather than the Kit's tokens, as Speed and pitch does.
-static const CGFloat kRowHeight = 56, kSideMargin = 16, kGlyphSide = 24, kGlyphGap = 16;
+static const CGFloat kRowHeight = 56, kMixRowHeight = 68, kSideMargin = 16, kGlyphSide = 24, kGlyphGap = 16;
 
 static char kToolbarKey, kSortKey, kBlockKey, kDecidedKey;
 
@@ -78,14 +85,54 @@ static NSString *pillGlyph(UIView *pill) {
     return name;
 }
 
+static NSString *trimmed(NSString *text) {
+    if (![text isKindOfClass:NSString.class]) return nil;
+    NSString *s = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return s.length ? s : nil;
+}
+
 static NSString *pillWord(UIView *pill) {
     __block NSString *word = nil;
     SGForEachView(pill, ^(UIView *v) {
         if (word || ![v isKindOfClass:UILabel.class]) return;
-        NSString *text = [((UILabel *)v).text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        if (text.length) word = text;
+        word = trimmed(((UILabel *)v).text);
     });
-    return word ?: pill.accessibilityLabel;
+    return word ?: trimmed(pill.accessibilityLabel);
+}
+
+// The Mix row's two lines, both Spotify's. The short one is the action the pill draws; a longer one
+// already on the pill (its other label, or the control's accessibility label) is the status under it.
+// A pill with a single string keeps that string and no second line is invented.
+static void mixCopy(UIView *pill, NSString **wordOut, NSString **detailOut, BOOL *onOut) {
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    void (^add)(NSString *) = ^(NSString *text) {
+        NSString *s = trimmed(text);
+        if (s && ![lines containsObject:s]) [lines addObject:s];
+    };
+    add(pill.accessibilityLabel);
+    SGForEachView(pill, ^(UIView *v) {
+        if ([v isKindOfClass:UILabel.class]) add(((UILabel *)v).text);
+        else if ([v isKindOfClass:UIControl.class]) add(v.accessibilityLabel);
+    });
+    NSString *word = nil, *detail = nil;
+    for (NSString *line in lines) {
+        if (!word || line.length < word.length) word = line;
+    }
+    for (NSString *line in lines) {
+        if (word && ![line isEqualToString:word] && (!detail || line.length > detail.length)) detail = line;
+    }
+    __block BOOL on = (pill.accessibilityTraits & UIAccessibilityTraitSelected) != 0;
+    if ([pill isKindOfClass:UIControl.class] && ((UIControl *)pill).selected) on = YES;
+    if (!on) {
+        SGForEachView(pill, ^(UIView *v) {
+            if (on) return;
+            if (v.accessibilityTraits & UIAccessibilityTraitSelected) on = YES;
+            else if ([v isKindOfClass:UIControl.class] && ((UIControl *)v).selected) on = YES;
+        });
+    }
+    *wordOut = word ?: pillWord(pill);
+    *detailOut = detail;
+    *onOut = on;
 }
 
 // The two pills of the row, in the order they are to read on the sheet. Either may be missing: a playlist
@@ -122,6 +169,52 @@ static void pillsIn(UIView *toolbar, UIView **sort, UIView **mix) {
     *mix = foundMix;
 }
 
+// The row the list has already handed over, or the one sitting in the page now. A zero-height
+// curation cell is measured before it is laid out, so the pill can be found without a scroll.
+static UIView *heldCuration(UIView *page) {
+    if (!page) return nil;
+    UIView *held = objc_getAssociatedObject(page, &kToolbarKey);
+    if (held.window) return held;
+    UIView *found = SGRFindByIdentifier(page, SGRPlaylistCurationIdentifier, NULL);
+    if (found) {
+        objc_setAssociatedObject(page, &kToolbarKey, found, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return found;
+    }
+    return held;
+}
+
+BOOL SGRPlaylistCurationSeen(UIView *page) {
+    return heldCuration(page) != nil;
+}
+
+BOOL SGRPlaylistIsMixed(UIView *page) {
+    static NSString *last;
+    if (!page) {
+        if (![last isEqualToString:@"no-page"]) {
+            last = @"no-page";
+            SGLog(@"redesign playlist: mixed no, the page is missing, glow off");
+        }
+        return NO;
+    }
+    UIView *toolbar = heldCuration(page);
+    if (!toolbar) {
+        if (![last isEqualToString:@"no-toolbar"]) {
+            last = @"no-toolbar";
+            SGLog(@"redesign playlist: play glow skipped, the curation row has not been seen");
+        }
+        return NO;
+    }
+    UIView *sort = nil, *mix = nil;
+    pillsIn(toolbar, &sort, &mix);
+    NSString *mark = mix ? @"mixed" : @"no-pill";
+    if (![last isEqualToString:mark]) {
+        last = mark;
+        if (mix) SGLog(@"redesign playlist: mixed, the play capsule can glow (pill \"%@\")", pillWord(mix) ?: mix.accessibilityIdentifier);
+        else SGLog(@"redesign playlist: mixed no, the curation row has no Mix pill, glow off");
+    }
+    return mix != nil;
+}
+
 void SGRPlaylistTakeSort(UIView *page, UIView *button) {
     if (page && button && objc_getAssociatedObject(page, &kSortKey) != button) {
         objc_setAssociatedObject(page, &kSortKey, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -139,6 +232,8 @@ void SGRPlaylistTakeCuration(UIView *cell) {
     objc_setAssociatedObject(page, &kToolbarKey, toolbar, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     UIView *sort = nil, *mix = nil;
     pillsIn(toolbar, &sort, &mix);
+    // The header's first pass usually ran before this cell existed, with the glow left off.
+    SGRPlaylistRefreshPlayGlow(page);
     static BOOL logged;
     if (!logged) {
         logged = YES;
@@ -156,8 +251,10 @@ void SGRPlaylistTakeCuration(UIView *cell) {
 @end
 
 @implementation SGRMenuRow {
-    UIImageView *_glyph;
-    UILabel *_word;
+    UIImageView *_glyph, *_mark;
+    UILabel *_word, *_detail;
+    NSString *_symbol;
+    BOOL _on;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -175,6 +272,19 @@ void SGRPlaylistTakeCuration(UIView *cell) {
     _word.userInteractionEnabled = NO;
     [self addSubview:_word];
 
+    _detail = [UILabel new];
+    _detail.textColor = [UIColor colorWithWhite:1 alpha:0.62];
+    _detail.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    _detail.userInteractionEnabled = NO;
+    _detail.hidden = YES;
+    [self addSubview:_detail];
+
+    _mark = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"checkmark"]];
+    _mark.contentMode = UIViewContentModeScaleAspectFit;
+    _mark.userInteractionEnabled = NO;
+    _mark.hidden = YES;
+    [self addSubview:_mark];
+
     self.isAccessibilityElement = YES;
     self.accessibilityTraits = UIAccessibilityTraitButton;
     [self addTarget:self action:@selector(sgr_down) forControlEvents:UIControlEventTouchDown];
@@ -184,21 +294,56 @@ void SGRPlaylistTakeCuration(UIView *cell) {
 }
 
 - (void)showWord:(NSString *)word symbol:(NSString *)symbol {
-    if (![_word.text isEqualToString:word]) {
-        _word.text = word;
-        self.accessibilityLabel = word;
+    [self showWord:word detail:nil symbol:symbol on:NO];
+}
+
+// `detail` is a second string already on Spotify's pill, or nil. `on` is the pill reporting itself selected.
+- (void)showWord:(NSString *)word detail:(NSString *)detail symbol:(NSString *)symbol on:(BOOL)on {
+    if (word && ![_word.text isEqualToString:word]) _word.text = word;
+    NSString *shown = detail.length ? detail : nil;
+    if (shown != _detail.text && ![shown isEqualToString:_detail.text]) _detail.text = shown;
+    _detail.hidden = shown == nil;
+    if (symbol.length && ![symbol isEqualToString:_symbol]) {
+        _symbol = symbol;
+        _glyph.image = [UIImage systemImageNamed:symbol];
     }
-    if (!_glyph.image) _glyph.image = [UIImage systemImageNamed:symbol];
+    _on = on;
+    _mark.hidden = !on;
+    UIColor *tint = on ? SGRAccent() : UIColor.whiteColor;
+    _glyph.tintColor = tint;
+    _mark.tintColor = tint;
+    self.accessibilityLabel = word;
+    self.accessibilityValue = shown;
+    self.accessibilityTraits = UIAccessibilityTraitButton | (on ? UIAccessibilityTraitSelected : 0);
+    [self setNeedsLayout];
+}
+
+- (CGFloat)sgr_rowHeight {
+    return _detail.text.length ? kMixRowHeight : kRowHeight;
 }
 
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGRect bounds = self.bounds;
     _glyph.frame = CGRectMake(kSideMargin, round((bounds.size.height - kGlyphSide) / 2), kGlyphSide, kGlyphSide);
+    CGFloat trail = _mark.hidden ? kSideMargin : kSideMargin + kGlyphSide + 8;
+    if (!_mark.hidden) {
+        _mark.frame = CGRectMake(bounds.size.width - kSideMargin - kGlyphSide,
+                                 round((bounds.size.height - kGlyphSide) / 2), kGlyphSide, kGlyphSide);
+    }
     CGFloat lead = kSideMargin + kGlyphSide + kGlyphGap;
-    [_word sizeToFit];
-    _word.frame = CGRectMake(lead, round((bounds.size.height - _word.bounds.size.height) / 2),
-                             MAX(0, bounds.size.width - lead - kSideMargin), _word.bounds.size.height);
+    CGFloat textW = MAX(0, bounds.size.width - lead - trail);
+    if (_detail.text.length) {
+        CGFloat wordH = ceil(_word.font.lineHeight), detailH = ceil(_detail.font.lineHeight);
+        CGFloat top = round((bounds.size.height - wordH - 2 - detailH) / 2);
+        _word.frame = CGRectMake(lead, top, textW, wordH);
+        _detail.frame = CGRectMake(lead, top + wordH + 2, textW, detailH);
+    } else {
+        [_word sizeToFit];
+        _word.frame = CGRectMake(lead, round((bounds.size.height - _word.bounds.size.height) / 2),
+                                 textW, _word.bounds.size.height);
+        _detail.frame = CGRectZero;
+    }
 }
 
 - (void)sgr_down {
@@ -223,9 +368,9 @@ void SGRPlaylistTakeCuration(UIView *cell) {
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
-    _sort = [[SGRMenuRow alloc] initWithFrame:CGRectZero];
     _mix = [[SGRMenuRow alloc] initWithFrame:CGRectZero];
-    for (SGRMenuRow *row in @[_sort, _mix]) {
+    _sort = [[SGRMenuRow alloc] initWithFrame:CGRectZero];
+    for (SGRMenuRow *row in @[_mix, _sort]) {
         row.hidden = YES;
         [row addTarget:self action:@selector(sgr_rowTapped:) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:row];
@@ -240,7 +385,18 @@ void SGRPlaylistTakeCuration(UIView *cell) {
     _sort.pill = sort;
     _mix.pill = mix;
     if (sort) [_sort showWord:pillWord(sort) symbol:@"arrow.up.arrow.down"];
-    if (mix) [_mix showWord:pillWord(mix) symbol:@"slider.horizontal.3"];
+    if (mix) {
+        NSString *word = nil, *detail = nil;
+        BOOL on = NO;
+        mixCopy(mix, &word, &detail, &on);
+        [_mix showWord:word detail:detail symbol:@"waveform" on:on];
+        static BOOL logged;
+        if (!logged && word.length) {
+            logged = YES;
+            SGLog(@"redesign playlist: mix row \"%@\"%@%@, %@", word, detail.length ? @" — " : @"",
+                  detail ?: @"", on ? @"on" : @"off");
+        }
+    }
     _sort.hidden = sort == nil;
     _mix.hidden = mix == nil;
     [self setNeedsLayout];
@@ -248,17 +404,18 @@ void SGRPlaylistTakeCuration(UIView *cell) {
 
 - (CGFloat)wantedHeight {
     CGFloat height = 0;
-    for (SGRMenuRow *row in @[_sort, _mix]) height += row.hidden ? 0 : kRowHeight;
+    for (SGRMenuRow *row in @[_mix, _sort]) height += row.hidden ? 0 : [row sgr_rowHeight];
     return height;
 }
 
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat y = 0;
-    for (SGRMenuRow *row in @[_sort, _mix]) {
+    for (SGRMenuRow *row in @[_mix, _sort]) {
         if (row.hidden) continue;
-        row.frame = CGRectMake(0, y, self.bounds.size.width, kRowHeight);
-        y += kRowHeight;
+        CGFloat height = [row sgr_rowHeight];
+        row.frame = CGRectMake(0, y, self.bounds.size.width, height);
+        y += height;
     }
 }
 
@@ -303,12 +460,7 @@ static UITableView *tableIn(UIView *root, int depth) {
 // had been opened and closed a few times (device 2026-09-20). The walk is the page's live views, which is
 // the cells on screen and no more, and it is done once per sheet.
 static UIView *curationIn(UIView *page) {
-    UIView *held = objc_getAssociatedObject(page, &kToolbarKey);
-    // A reload replaces the row; the one held from before is out of the window and its Mix answers nothing.
-    if (held.window) return held;
-    UIView *found = SGRFindByIdentifier(page, SGRPlaylistCurationIdentifier, NULL);
-    if (found) objc_setAssociatedObject(page, &kToolbarKey, found, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    return found ?: held;
+    return heldCuration(page);
 }
 
 // The page this sheet belongs to, decided once and only from the ⋯ that opened it. What the page has to

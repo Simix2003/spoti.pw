@@ -252,7 +252,7 @@ static const CGFloat kTapSlop = 10;                 // further than this and the
 static const NSTimeInterval kTapLongest = 0.5;
 static const CGFloat kBarReach = 12;                // past either end of the bar a tap still counts
 
-static char kSliderKey, kSeekWatcherKey;
+static char kSliderKey, kSeekWatcherKey, kGlassKey;
 static __weak UISlider *sg_seekingSlider;           // answers isTracking while a tap plays its drag
 static __weak UITouch *sg_tapTouch;                 // the touch the watcher follows
 static BOOL sg_sliderTookTap;                       // and the slider began tracking it too (its thumb)
@@ -381,6 +381,98 @@ static void seekOnTap(UISlider *slider, CGPoint point) {
 
 @end
 
+// A system slider over Spotify's bar, shown only while the finger is down. No trackConfiguration
+// type is declared in this checkout, so the system default is what iOS 26 draws; the seek is
+// forwarded to Spotify's own slider.
+@interface SGRGlassScrubber : UISlider
+@property (nonatomic, weak) UISlider *spotify;
+@property (nonatomic) BOOL forwarding;
+@end
+
+static UIImage *clearThumb(void) {
+    static UIImage *image;
+    if (image) return image;
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(1, 1), NO, 0);
+    image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return image;
+}
+
+@implementation SGRGlassScrubber
+- (instancetype)initWithFrame:(CGRect)frame {
+    if (!(self = [super initWithFrame:frame])) return nil;
+    [self showForDrag:NO];
+    if (@available(iOS 26.0, *)) {
+        if ([self respondsToSelector:NSSelectorFromString(@"setTrackConfiguration:")]) {
+            static BOOL logged;
+            if (!logged) {
+                logged = YES;
+                SGLog(@"redesign player: glass scrubber leaves trackConfiguration at the system default");
+            }
+        }
+    }
+    [self addTarget:self action:@selector(down) forControlEvents:UIControlEventTouchDown];
+    [self addTarget:self action:@selector(moved) forControlEvents:UIControlEventValueChanged];
+    [self addTarget:self action:@selector(up) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
+    return self;
+}
+
+- (void)showForDrag:(BOOL)show {
+    self.alpha = show ? 1 : 0.02;
+    UIImage *thumb = show ? nil : clearThumb();
+    [self setThumbImage:thumb forState:UIControlStateNormal];
+    [self setThumbImage:thumb forState:UIControlStateHighlighted];
+    // Spotify's tint is green, and a nil track tint picks that up the moment the finger goes down.
+    // Clear tracks leave Spotify's own bar (kept white below) showing through; the thumb stays the
+    // system's. White tint stops the thumb taking the green as well.
+    self.minimumTrackTintColor = UIColor.clearColor;
+    self.maximumTrackTintColor = UIColor.clearColor;
+    self.tintColor = UIColor.whiteColor;
+}
+
+- (void)syncFromSpotify {
+    UISlider *spotify = self.spotify;
+    if (!spotify || self.tracking || self.forwarding) return;
+    self.minimumValue = spotify.minimumValue;
+    self.maximumValue = spotify.maximumValue;
+    if (fabsf(self.value - spotify.value) > 0.001f) [self setValue:spotify.value animated:NO];
+}
+
+- (void)forward:(UIControlEvents)events {
+    UISlider *spotify = self.spotify;
+    if (!spotify) return;
+    self.forwarding = YES;
+    sg_seekingSlider = (events & UIControlEventTouchDown) ? spotify : sg_seekingSlider;
+    if (events & UIControlEventTouchDown) [spotify sendActionsForControlEvents:UIControlEventTouchDown];
+    [spotify setValue:self.value animated:NO];
+    [spotify sendActionsForControlEvents:UIControlEventValueChanged];
+    if (events & (UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel)) {
+        [spotify sendActionsForControlEvents:UIControlEventTouchUpInside];
+        if (sg_seekingSlider == spotify) sg_seekingSlider = nil;
+    }
+    self.forwarding = NO;
+}
+
+- (void)down {
+    [self showForDrag:YES];
+    [self forward:UIControlEventTouchDown];
+    static BOOL logged;
+    if (!logged) {
+        logged = YES;
+        SGLog(@"redesign player: glass scrubber shown on the first touch");
+    }
+}
+
+- (void)moved {
+    [self forward:UIControlEventValueChanged];
+}
+
+- (void)up {
+    [self forward:UIControlEventTouchUpInside];
+    [self showForDrag:NO];
+}
+@end
+
 %hook _TtCO17NowPlaying_ECMKit11ProgressBar6Slider
 - (BOOL)isTracking {
     return (UISlider *)self == sg_seekingSlider || %orig;
@@ -391,7 +483,33 @@ static void seekOnTap(UISlider *slider, CGPoint point) {
     if (tracking && touch == sg_tapTouch) sg_sliderTookTap = YES;
     return tracking;
 }
+
+- (void)setValue:(float)value {
+    %orig;
+    SGRGlassScrubber *glass = objc_getAssociatedObject(self, &kGlassKey);
+    if ([glass isKindOfClass:SGRGlassScrubber.class]) [glass syncFromSpotify];
+}
+
+- (void)setValue:(float)value animated:(BOOL)animated {
+    %orig;
+    SGRGlassScrubber *glass = objc_getAssociatedObject(self, &kGlassKey);
+    if ([glass isKindOfClass:SGRGlassScrubber.class]) [glass syncFromSpotify];
+}
 %end
+
+// A zero rect is the duration unit's first layout (device log: slider and host both height 0).
+// Putting the overlay there leaves it with nothing to draw. A short bar is grown so the thumb
+// is not clipped to that line.
+static CGRect scrubberFrameFor(UISlider *slider) {
+    CGRect frame = slider.frame;
+    if (frame.size.width < 40 || frame.size.height < 1) return CGRectNull;
+    if (frame.size.height < 28) {
+        CGFloat grow = 28 - frame.size.height;
+        frame.origin.y -= grow / 2;
+        frame.size.height = 28;
+    }
+    return frame;
+}
 
 static void watchForSeekTaps(UIView *host, UILabel *taken, UILabel *remaining) {
     UISlider *slider = (UISlider *)SGRFindByIdentifier(host, @"SPTNowPlayingSliderV2", &kSliderKey);
@@ -412,6 +530,28 @@ static void watchForSeekTaps(UIView *host, UILabel *taken, UILabel *remaining) {
     watcher.slider = slider;
     watcher.taken = taken;
     watcher.remaining = remaining;
+
+    SGRGlassScrubber *glass = objc_getAssociatedObject(slider, &kGlassKey);
+    if (![glass isKindOfClass:SGRGlassScrubber.class]) {
+        glass = [SGRGlassScrubber new];
+        glass.spotify = slider;
+        objc_setAssociatedObject(slider, &kGlassKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        SGLog(@"redesign player: glass scrubber over %@ %@", NSStringFromClass(slider.class), NSStringFromCGRect(slider.frame));
+    }
+    UIColor *white = UIColor.whiteColor;
+    UIColor *rest = [UIColor colorWithWhite:1 alpha:0.35];
+    if (![slider.minimumTrackTintColor isEqual:white]) slider.minimumTrackTintColor = white;
+    if (![slider.maximumTrackTintColor isEqual:rest]) slider.maximumTrackTintColor = rest;
+    CGRect frame = scrubberFrameFor(slider);
+    if (CGRectIsNull(frame)) {
+        glass.hidden = YES;
+        return;
+    }
+    if (glass.hidden) glass.hidden = NO;
+    if (glass.superview != slider.superview) [slider.superview addSubview:glass];
+    if (slider.superview.subviews.lastObject != glass) [slider.superview bringSubviewToFront:glass];
+    if (!CGRectEqualToRect(glass.frame, frame)) glass.frame = frame;
+    [glass syncFromSpotify];
 }
 
 static void layOutTimes(UIViewController *unit) {
