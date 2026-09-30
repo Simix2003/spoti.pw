@@ -2,6 +2,7 @@
 #import "Settings/SGPageStyle.h"
 #import "About.h"
 #import "App/Onboarding/Onboarding.h"
+#import "Shared/JamProbe/JamProbe.h"
 
 // Makefile passes these. A build that doesn't still compiles, and the row says unknown.
 #ifndef SG_BUILD
@@ -54,6 +55,35 @@ static SGModRow *withSymbol(SGModRow *row, NSString *symbol) {
     return row;
 }
 
+static NSString *logSizeLabel(void) {
+    uint64_t bytes = SGLogExportByteCount();
+    if (bytes < 1024) return [NSString stringWithFormat:@"%llu B", (unsigned long long)bytes];
+    if (bytes < 1024 * 1024) return [NSString stringWithFormat:@"%.1f KB", bytes / 1024.0];
+    return [NSString stringWithFormat:@"%.2f MB", bytes / (1024.0 * 1024.0)];
+}
+
+static void shareLogs(void) {
+    SGLogExportSnapshot(^(NSURL *url) {
+        UIViewController *top = SGTopController();
+        if (!url || !top) {
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"No logs yet" message:@"Use Spotify for a moment, then share the log file." preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+            [SGTopController() presentViewController:alert animated:YES completion:nil];
+            return;
+        }
+        UIActivityViewController *sheet = [[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];
+        sheet.popoverPresentationController.sourceView = top.view;
+        [top presentViewController:sheet animated:YES completion:nil];
+    });
+}
+
+static void confirmClearLogs(void) {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Clear logs?" message:@"The on-phone log file is deleted. Spotify keeps running." preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Clear logs" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) { SGLogExportClear(); }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [SGTopController() presentViewController:alert animated:YES completion:nil];
+}
+
 // Which build this is, whether GitHub has a newer release, and where to reach the mod: without these
 // rows a build that is already installed has no way of telling its user that anything moved on.
 UIViewController *SGAboutPage(void) {
@@ -68,6 +98,15 @@ UIViewController *SGAboutPage(void) {
         SGStatRow(@"Version", ^NSString *{ return @(SG_VERSION); }),
         SGStatRow(@"Build", ^NSString *{ return SGBuildLabel(); }),
         SGStatRow(@"Spotify", ^NSString *{ return spotify; }),
+    ])];
+    SGModRow *logFile = SGStatRow(@"Log file", ^NSString *{ return logSizeLabel(); });
+    logFile.subtitle = [NSString stringWithFormat:@"Build %@", SGBuildLabel()];
+    logFile.refreshOn = SGLogExportDidChangeNotification;
+    [sections addObject:SGSection(@"Debug", @[
+        withSymbol(SGPageRow(@"Jam probe", ^UIViewController *{ return SGJamProbePage(); }), @"ladybug"),
+        logFile,
+        withSymbol(SGActionRow(@"Share logs", @"AirDrop, Files, or Messages", ^{ shareLogs(); }), @"square.and.arrow.up"),
+        withSymbol(SGActionRow(@"Clear logs", nil, ^{ confirmClearLogs(); }), @"trash"),
     ])];
     SGModRow *appIcon = SGAppIconRow();
     if (appIcon) [sections addObject:SGSection(nil, @[withSymbol(appIcon, @"app")])];
