@@ -1365,7 +1365,6 @@ static void refreshProbe(void) {
     placeProbe(button, window);
     button.hidden = NO;
     [window bringSubviewToFront:button];
-    sg_probeWindow = window;
 }
 
 static void scheduleRefresh(void) {
