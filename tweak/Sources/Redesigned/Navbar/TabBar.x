@@ -1652,14 +1652,6 @@ static BOOL canDriveMinimize(UIScrollView *scroll) {
     return CGRectGetMidY(scrollInWindow) < CGRectGetMinY(barInWindow) - 8;
 }
 
-static BOOL isVerticalPageScroll(UIScrollView *scroll) {
-    return canDriveMinimize(scroll);
-}
-
-static BOOL isPageScroll(UIScrollView *scroll) {
-    return canDriveMinimize(scroll);
-}
-
 static BOOL isNearerFront(UIView *a, UIView *b, UIView *container) {
     if (!b) return YES;
     if (!a) return NO;
