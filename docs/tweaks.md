@@ -260,6 +260,13 @@ Redesigned:
                   Spotify's: they were taken out when this was first built and put back in 0.21 (issue #20), since
                   sorting a library is not something the page can do without, and Spotify already draws them on the
                   system's own glass
+    Stats/        Statistiche di ascolto: each week's five tiles drawn as cards over Spotify's own (a hero of minutes with
+                  the friend rank, artwork tiles with their movement chips) and each detail page's summary line as a big
+                  number with its unit and week. The copy is read off the tiles' accessibility labels (Italian, the
+                  language of the recorded page), the artwork off the pictures Spotify loaded, and the cards take no
+                  touches and sit at the tiles' frames, so the tiles under them stay the ones tapped. A label that does
+                  not parse leaves its cell Spotify's. The detail pages' rows have nothing readable but a title and are
+                  untouched (Stats.h lists its files; the pages are recorded in docs/stats-probe.md's dumps)
     Playlist/     the playlist page (Liked Songs and one's own too, all three being the same page) the way the Music
                   app lays one out: the cover full bleed across the top dissolving into the page's field with no seam,
                   the title, the creator after their picture and the length centred under it, one row of glass

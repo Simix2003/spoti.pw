@@ -4,6 +4,7 @@ Changes on top of `beta` (0.23.0-beta). One commit. The Jam probe, the stats pro
 
 ## Features
 
+- Redesigned UI: Statistiche di ascolto draws each week's tiles as cards (minutes as a large number with the friend rank, favorite and top tiles with their artwork and rank movement) and each detail page's summary as a big number with its unit and week, over Spotify's own cells, which keep every touch (`Redesigned/Stats/`). Italian copy only for now; a label that does not parse leaves the cell as Spotify drew it.
 - On iOS 26 the redesigned tab bar is a `UITabBarController`. Tabs the Navbar list leaves shown sit in the leading platter with their icon and title. Search is a trailing `UISearchTab`. Picking it opens Spotify's Search page and asks for the field.
 - Apple Music style player is on unless turned off (read at launch). It adds the mini player as a `UITabAccessory`. Minimizing and expanding stay UIKit's: scroll down from the top of the page, or a tap on the minimized bar.
 - A tap on the mini player opens the full player through Spotify's own card, and keeps trying until the player is on screen. A sideways drag still skips.
