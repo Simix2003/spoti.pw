@@ -621,6 +621,16 @@ static void claimDrawer(UIViewController *list) {
 }
 %end
 
+static UIViewController *sideDrawerListIn(UIViewController *root) {
+    if (!root) return nil;
+    if ([NSStringFromClass(root.class) containsString:@"SideDrawer_ListPageImpl"]) return root;
+    for (UIViewController *child in root.childViewControllers) {
+        UIViewController *found = sideDrawerListIn(child);
+        if (found) return found;
+    }
+    return nil;
+}
+
 // Catch a present that wraps the drawer in MusicAppPageHostingViewController before ListViewController appears.
 %hook UIViewController
 - (void)presentViewController:(UIViewController *)viewController animated:(BOOL)animated completion:(void (^)(void))completion {
@@ -629,16 +639,7 @@ static void claimDrawer(UIViewController *list) {
     if (!claim || !viewController) return;
     __weak UIViewController *weak = viewController;
     void (^tryClaim)(void) = ^{
-        UIViewController *presented = weak;
-        if (!presented) return;
-        __block UIViewController *list = nil;
-        __block void (^walk)(UIViewController *);
-        walk = ^(UIViewController *vc) {
-            if (list) return;
-            if ([NSStringFromClass(vc.class) containsString:@"SideDrawer_ListPageImpl"]) list = vc;
-            for (UIViewController *child in vc.childViewControllers) walk(child);
-        };
-        walk(presented);
+        UIViewController *list = sideDrawerListIn(weak);
         if (list) claimDrawer(list);
     };
     dispatch_async(dispatch_get_main_queue(), tryClaim);
