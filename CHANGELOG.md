@@ -30,6 +30,12 @@ Entries for the `beta-simix-overnight` fork. Release Please does not version the
 * **Changed:** An upward drag on the minimized capsule itself commits the same way (24pt, or a flick), instead of doing nothing. The sideways skip gesture is unchanged.
 * **Known limits:** `SPTBarInteractivePresentationController` is only named in a comment (`Shared/Player/PlayerEvents.x`). No selector for it is in this checkout, there is no `trees/` dump and no Spotify binary, so it was not hooked. Opening and closing the full player still follow Spotify's own progress on `SPTBarOverlayPresentationTransition`, which was already proven. Not compiled and not run on a phone. If UIKit ignores a behavior change made mid-drag, the expand waits until the finger lifts.
 
+### Player open after a queue edit
+
+* **Fixed:** Adding a track to the queue could leave the mini player unable to open the song that is actually playing. Two races in `Shared/Player/PlayerState.x` line up with that. The platform reports `player:stateDidChange:` from more than one thread, and a report dispatched to the main queue could land after a newer one and publish the previous track. Reports are now ordered by when they were handed over, and an older one is dropped. The published key also ignored `future` and `reverse`, so a queue edit that kept the same track was thrown away and `SGPlayerState()` stayed the object from before the edit.
+* **Fixed:** The tap that opens the player walks Spotify's bar breadth-first and used to stop at the first tap recognizer. After a queue edit the card's recognizer is missing for a layout while a button's is not, so the tap "succeeded" on a control and the player never presented. Recognizers on views narrower than 120pt are skipped (the bar in `trees/home.txt` is 386pt wide). If none of the wide ones fire, the same walk runs again on the next turn and once more 0.3s later, and it does not run again once `SGPlayerTransitionEnds()` says the player is already opening.
+* **Known limits:** Not compiled and not run on a phone. A recognizer that is wide, fires, and still does not present is not retried, because a second tap would dismiss a player that opened slowly. `SPTBarOverlayPresentationTransition` was left as it is: nothing there shows a stuck open after a queue edit. The queue key is the count plus the first 12 URIs of `future` and of `reverse`, so an edit past that still notifies through the count, and a position report does not.
+
 ## [0.22.0](https://github.com/skopevoj/spoti.pw/compare/v0.21.1...v0.22.0) (2026-09-23)
 
 

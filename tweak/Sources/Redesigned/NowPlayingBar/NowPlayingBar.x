@@ -14,6 +14,7 @@
 #import "Core/SGCore.h"
 #import "Redesigned/Kit/SGRRepaint.h"
 #import "Redesigned/Navbar/Navbar.h"
+#import "Shared/Player/PlayerEvents.h"
 #import "NowPlayingBar.h"
 
 static const CGFloat kCardRadius = 24;
@@ -68,30 +69,62 @@ UIImage *SGRNowPlayingArtworkImage(void) {
 
 // The recognizer nearest the top of the bar opens the player; deeper ones belong to its buttons and the
 // device line. Breadth first from the bar's container, then up its superviews to Spotify's page.
-BOOL SGROpenPlayerFromBar(void) {
-    UIView *container = sg_barContainer;
+// A control is narrower than the card (trees/home.txt: the bar is 386pt, its buttons are not), and
+// firing one of those reports success without presenting the player. After a queue edit the card's
+// recognizer is missing for a turn while a button's is not, which is the open that does nothing.
+static const CGFloat kOpenTapWidth = 120;
+
+static BOOL fireOpenTap(UIView *view, NSString *where) {
+    if (view.bounds.size.width < kOpenTapWidth) return NO;
+    if (!SGRFireTapRecognizers(view)) return NO;
+    SGLog(@"mini player: tap passed to %@ %@", NSStringFromClass(view.class), where);
+    return YES;
+}
+
+static BOOL fireOpen(UIView *container) {
     if (!container) return NO;
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:container];
     while (queue.count) {
         UIView *view = queue.firstObject;
         [queue removeObjectAtIndex:0];
-        if (SGRFireTapRecognizers(view)) {
-            SGLog(@"mini player: tap passed to %@ on Spotify's bar", NSStringFromClass(view.class));
-            return YES;
-        }
+        if (fireOpenTap(view, @"on Spotify's bar")) return YES;
         [queue addObjectsFromArray:view.subviews];
     }
     for (UIView *view = container.superview; view && ![view isKindOfClass:UIWindow.class]; view = view.superview) {
-        if (SGRFireTapRecognizers(view)) {
-            SGLog(@"mini player: tap passed to %@ above Spotify's bar", NSStringFromClass(view.class));
-            return YES;
-        }
+        if (fireOpenTap(view, @"above Spotify's bar")) return YES;
     }
+    return NO;
+}
+
+static void logMissingOpen(UIView *container) {
     NSMutableString *out = [NSMutableString stringWithString:@"mini player: no tap recognizer on Spotify's bar"];
     SGForEachView(container, ^(UIView *v) {
         for (UIGestureRecognizer *r in v.gestureRecognizers) [out appendFormat:@"\n  %@ on %@", r, NSStringFromClass(v.class)];
     });
     SGLogLong(@"mini player", out);
+}
+
+static NSUInteger sg_openToken;
+
+BOOL SGROpenPlayerFromBar(void) {
+    UIView *container = sg_barContainer;
+    if (fireOpen(container)) return YES;
+    // The bar rebuilds when the queue changes. The recognizer that opens the player is often absent
+    // on the tap and back on the next layout, so look again then, and once more if it is still gone.
+    NSUInteger token = ++sg_openToken;
+    __weak UIView *weakContainer = container;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (token != sg_openToken || SGPlayerTransitionEnds() > 0) return;
+        UIView *again = sg_barContainer ?: weakContainer;
+        if (fireOpen(again)) {
+            SGLog(@"mini player: tap opened once the bar had laid out");
+            return;
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (token != sg_openToken || SGPlayerTransitionEnds() > 0) return;
+            if (!fireOpen(sg_barContainer)) logMissingOpen(sg_barContainer);
+        });
+    });
     return NO;
 }
 

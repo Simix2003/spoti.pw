@@ -15,7 +15,8 @@
 NSString *SGURIString(id uri);
 
 @protocol SGPlayerStateObserver <NSObject>
-// Called when the track, the context, paused, playing, loading or shuffle changed, not for position.
+// Called when the track, the context, the queue (the near future and the near history), paused,
+// playing, loading or shuffle changed, not for position.
 - (void)playerStateDidChange:(SPTPlayerState *)state;
 @end
 // Observers are held weakly and need no removal.
