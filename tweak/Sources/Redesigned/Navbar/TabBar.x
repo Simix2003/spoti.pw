@@ -866,7 +866,10 @@ static const CGFloat kExpandVelocity = 350;
             [scroll setContentOffset:CGPointMake(scroll.contentOffset.x, dest) animated:YES];
             return;
         }
-        SGLog(@"tab bar: capsule swipe down, list already at %.0f (UIKit minimizes on scroll)", y);
+        SGLog(@"tab bar: capsule swipe down, list already at %.0f, UIKit is armed again", y);
+        if (@available(iOS 26.0, *))
+            self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
+        nameScrollView();
         return;
     }
     SGLog(@"tab bar: capsule swipe down, no page list to minimize by");
@@ -1059,7 +1062,10 @@ static void collectTabControls(UIView *view, UIView *bar, NSMutableArray<UIView 
         fitting = NO;
         logTabFit(count, full, full, self.minimized ? @"inline minimized" : @"inline");
     }
-    if (!self.minimized) {
+    // Only when a tab has been hidden since a wider set was measured. The full-width
+    // frame is what puts Search on the trailing edge; this pass corrects a cluster
+    // UIKit still centered inside that frame.
+    if (!self.minimized && count < sg_slotCount) {
         fitting = YES;
         [self alignLeadingTabs];
         fitting = NO;
