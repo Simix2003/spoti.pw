@@ -42,7 +42,7 @@ static const CGFloat kMinHero = 120, kMinCover = 80;
 
 static char kCoverKey, kMetaKey, kPlayKey, kLayoutKey, kToolbarKey, kScrimKey, kBarScrimKey;
 static char kShuffleKey, kAddKey, kDownloadKey, kInfoKey, kBlockHeightKey, kBlockWatchedKey;
-static char kHeroKey, kHeroHeightKey, kRestPlaneKey, kRowKey, kRowWatchedKey, kMoreKey, kCreatorKey, kPinnedMoreKey, kSortKey;
+static char kHeroKey, kHeroHeightKey, kRestPlaneKey, kRowKey, kRowWatchedKey, kMoreKey, kCreatorKey, kPinnedMoreKey, kSortKey, kGlowCoverKey;
 
 #pragma mark - finding things
 
@@ -176,8 +176,13 @@ static UIView *firstOfClass(UIView *root, Class wanted) {
 
     self.coverPixels = image.size.width;
     _picture.image = image;
-    // The page's field takes its colour from the same picture.
+    // The page's field takes its colour from the same picture. The Play halo reads the same cover.
+    UIView *page = SGRPlaylistPageOf(self);
+    if (page) objc_setAssociatedObject(page, &kGlowCoverKey, image, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     SGRPlaylistSetArtwork(self, image);
+    UIViewController *headerVC = SGRPlaylistHeaderOf(self);
+    SGRHeaderInfo *info = headerVC ? objc_getAssociatedObject(headerVC.viewIfLoaded, &kInfoKey) : nil;
+    if (info && page && SGRPlaylistIsMixed(page)) [info setPlayGlow:YES seed:nil image:image];
     SGRRevealMark(SGRPlaylistPageOf(self), SGRRevealPicture);
     static BOOL logged;
     if (late && !logged) {
@@ -342,12 +347,15 @@ static void showPlaylist(SGRHeaderInfo *info, UIView *block, UIView *root, id mo
     // Spotify's own Sort, from the find-on-page toolbar this header conceals, for the ⋯ sheet to fire.
     UIView *page = SGRPlaylistPageOf(root);
     BOOL mixed = SGRPlaylistIsMixed(page);
-    [info setPlayShimmer:mixed];
-    static NSString *shimmerDecision;
-    NSString *decision = [NSString stringWithFormat:@"%@ %@", play ? @"found" : @"missing", mixed ? @"on" : @"off"];
-    if (![decision isEqualToString:shimmerDecision]) {
-        shimmerDecision = decision;
-        SGLog(@"redesign playlist: play capsule %@, shimmer %@", play ? @"found" : @"missing", mixed ? @"on (mixed)" : @"off");
+    NSString *seed = modelString(model, @"playlistURI") ?: modelString(model, @"URI") ?: modelString(model, @"uri") ?: title;
+    UIImage *cover = page ? objc_getAssociatedObject(page, &kGlowCoverKey) : nil;
+    [info setPlayGlow:mixed seed:seed image:cover];
+    static NSString *glowDecision;
+    NSString *decision = [NSString stringWithFormat:@"%@ %@ %@", play ? @"found" : @"missing", mixed ? @"on" : @"off", cover ? @"cover" : @"no-cover"];
+    if (![decision isEqualToString:glowDecision]) {
+        glowDecision = decision;
+        SGLog(@"redesign playlist: play capsule %@, glow %@%@", play ? @"found" : @"missing", mixed ? @"on (mixed)" : @"off",
+              cover ? @", cover colours" : @"");
     }
     SGRPinnedMore(page, &kPinnedMoreKey, SGRFindByIdentifier(block, @"Components.UI.ContextMenuButton*", &kMoreKey));
     SGRPlaylistTakeSort(page, SGRFindByIdentifier(root, @"Components.Header.UI.Toolbar.Button", &kSortKey));

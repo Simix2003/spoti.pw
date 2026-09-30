@@ -21,9 +21,12 @@
 @property (nonatomic, copy) UIColor *fillColor;
 // The glyph's and the word's colour; nil is the accent.
 @property (nonatomic, copy) UIColor *contentColor;
-// A highlight that sweeps the capsule while YES. Reduce Motion draws nothing, and the sweep
-// stops while the capsule is out of a window. The playlist sets it when the page has a Mix pill.
-@property (nonatomic) BOOL mixShimmer;
+// A soft gradient halo around the capsule while YES (a mixed playlist). Reduce Motion holds it
+// still. The halo hides while the capsule is off screen, and it does not take taps. `seed`
+// (a playlist id or title) shifts the default colours; `image` (the cover) replaces them when
+// it has a few vivid colours. nil seed or image keeps the last one.
+@property (nonatomic, readonly) BOOL mixGlow;
+- (void)setMixGlow:(BOOL)on seed:(NSString *)seed image:(UIImage *)image;
 // Takes the glyph, the word and the language from `source`, and follows the glyph as Spotify swaps it
 // (play becoming pause) without the header laying out again. Cheap to call again on every pass.
 - (void)feedFrom:(UIView *)source;

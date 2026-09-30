@@ -174,7 +174,7 @@ BOOL SGRPlaylistIsMixed(UIView *page) {
     if (!page) {
         if (![last isEqualToString:@"no-page"]) {
             last = @"no-page";
-            SGLog(@"redesign playlist: mixed no, the page is missing, shimmer off");
+            SGLog(@"redesign playlist: mixed no, the page is missing, glow off");
         }
         return NO;
     }
@@ -182,7 +182,7 @@ BOOL SGRPlaylistIsMixed(UIView *page) {
     if (!toolbar) {
         if (![last isEqualToString:@"no-toolbar"]) {
             last = @"no-toolbar";
-            SGLog(@"redesign playlist: mixed no, the curation row has not been seen, shimmer off");
+            SGLog(@"redesign playlist: mixed no, the curation row has not been seen, glow off");
         }
         return NO;
     }
@@ -191,8 +191,8 @@ BOOL SGRPlaylistIsMixed(UIView *page) {
     NSString *mark = mix ? @"mixed" : @"no-pill";
     if (![last isEqualToString:mark]) {
         last = mark;
-        if (mix) SGLog(@"redesign playlist: mixed, the play capsule can shimmer (pill \"%@\")", pillWord(mix) ?: mix.accessibilityIdentifier);
-        else SGLog(@"redesign playlist: mixed no, the curation row has no Mix pill, shimmer off");
+        if (mix) SGLog(@"redesign playlist: mixed, the play capsule can glow (pill \"%@\")", pillWord(mix) ?: mix.accessibilityIdentifier);
+        else SGLog(@"redesign playlist: mixed no, the curation row has no Mix pill, glow off");
     }
     return mix != nil;
 }
