@@ -14,6 +14,7 @@
 @property (nonatomic, copy) NSString *identifier;
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy) NSString *subtitle;
+@property (nonatomic, copy) NSString *symbol;   // SF Symbol when Spotify's glyph cannot be scraped
 @property (nonatomic, strong) UIImage *image;
 @property (nonatomic, weak) UIView *control;
 @end

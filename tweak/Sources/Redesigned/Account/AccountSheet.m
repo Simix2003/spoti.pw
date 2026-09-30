@@ -11,13 +11,6 @@ static const CGFloat kIcon = 22;
 static const CGFloat kHeaderBottom = 20;
 static NSString *const kCellId = @"row";
 
-static NSString *symbolFor(NSString *identifier) {
-    if ([identifier isEqualToString:@"AccountSwitching.AddAccountRow"]) return @"person.badge.plus";
-    if ([identifier isEqualToString:@"Components.UI.YourPlanRowSideDrawer"]) return @"crown";
-    if ([identifier isEqualToString:@"Components.UI.NavigationRowSideDrawer"]) return @"chevron.forward.circle";
-    return @"circle";
-}
-
 @implementation SGRAccountRow
 @end
 
@@ -178,7 +171,6 @@ static NSString *symbolFor(NSString *identifier) {
 
     NSString *title;
     NSString *subtitle;
-    UIImage *image;
     NSString *symbol;
     if (indexPath.row == 0) {
         title = @"Mod Settings";
@@ -187,19 +179,15 @@ static NSString *symbolFor(NSString *identifier) {
         SGRAccountRow *row = _rows[(NSUInteger)indexPath.row - 1];
         title = row.title;
         subtitle = row.subtitle;
-        image = row.image;
-        symbol = symbolFor(row.identifier);
+        symbol = row.symbol.length ? row.symbol : @"circle";
     }
 
     UIImageView *icon = [[UIImageView alloc] initWithFrame:CGRectMake(SGRSideMargin, (kRowHeight - kIcon) / 2, kIcon, kIcon)];
     icon.contentMode = UIViewContentModeScaleAspectFit;
-    if (image) {
-        icon.image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-    } else {
-        UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightMedium];
-        icon.image = [[UIImage systemImageNamed:symbol ?: @"chevron.right" withConfiguration:config]
-                      imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-    }
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightMedium];
+    // SF Symbols are the stable glyphs: Spotify's Encore icons often snapshot empty once the drawer is held out of sight.
+    icon.image = [[UIImage systemImageNamed:symbol withConfiguration:config]
+                  imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
     icon.tintColor = SGRPrimary();
     [cell.contentView addSubview:icon];
 

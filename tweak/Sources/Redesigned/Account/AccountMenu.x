@@ -14,7 +14,6 @@
 static const NSTimeInterval kAvatarAfterTap = 3;
 static const NSTimeInterval kRowsWait = 4;
 static const NSTimeInterval kRowsPoll = 1.0 / 30.0;
-static const NSTimeInterval kSettle = 0.8;
 static NSString *const kLastRowsKey = @"spotifyglass.redesign.account.menuRows";
 
 static NSTimeInterval sgr_avatarTappedAt;
@@ -69,10 +68,6 @@ static UIViewController *presentedHost(UIViewController *list) {
     return top.presentingViewController ? top : nil;
 }
 
-static UIView *sheetViewOf(UIViewController *host) {
-    return host.presentationController.presentedView ?: host.viewIfLoaded;
-}
-
 static void hideSystemDimming(UIView *container) {
     static Class dimmingClass;
     if (!dimmingClass) dimmingClass = NSClassFromString(@"UIDimmingView");
@@ -107,44 +102,117 @@ static void showSystemDimming(UIView *container) {
     objc_setAssociatedObject(container, &kHiddenDimmingsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static void hidePresentation(UIView *sheet, UIView *container) {
-    // Touches stay on: the account sheet is presented from the drawer host, so its container sits
-    // in this hierarchy. Dropping touches here (as the player menu does for a menu outside the sheet)
-    // would leave the account sheet unable to take them.
-    if (!sheet) {
-        if (container) hideSystemDimming(container);
-        return;
+static char kContainerHiddenKey, kDrawerSubsKey;
+
+// Hide every view of the drawer's presentation that is not our account sheet. A page sheet only
+// covers the middle of the screen, so any drawer chrome left in the container shows as a black
+// sidebar behind it. Container subviews added for the account sheet are left alone.
+static void rememberDrawerSubs(UIViewController *host) {
+    UIView *container = host.presentationController.containerView;
+    if (!container || objc_getAssociatedObject(host, &kDrawerSubsKey)) return;
+    NSHashTable *subs = [NSHashTable weakObjectsHashTable];
+    for (UIView *sub in container.subviews) [subs addObject:sub];
+    objc_setAssociatedObject(host, &kDrawerSubsKey, subs, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void hidePresentation(UIViewController *host, SGRAccountSheet *accountSheet) {
+    if (!host) return;
+    rememberDrawerSubs(host);
+    UIPresentationController *presentation = host.presentationController;
+    UIView *container = presentation.containerView;
+    UIView *presented = presentation.presentedView ?: host.viewIfLoaded;
+    UIView *accountRoot = accountSheet.viewIfLoaded;
+    NSHashTable *drawerSubs = objc_getAssociatedObject(host, &kDrawerSubsKey);
+
+    void (^hideView)(UIView *) = ^(UIView *view) {
+        if (!view || view == accountRoot) return;
+        if (accountRoot && [accountRoot isDescendantOfView:view]) return;
+        if (accountRoot && [view isDescendantOfView:accountRoot]) return;
+        if (!view.hidden) view.hidden = YES;
+        if (view.userInteractionEnabled) view.userInteractionEnabled = NO;
+        view.accessibilityElementsHidden = YES;
+        if (view.alpha > 0.01) view.alpha = 0;
+    };
+
+    hideView(host.viewIfLoaded);
+    if (presented && presented != host.viewIfLoaded) hideView(presented);
+
+    for (UIView *sub in drawerSubs) hideView(sub);
+
+    if (container) {
+        if (!objc_getAssociatedObject(container, &kContainerHiddenKey)) {
+            objc_setAssociatedObject(container, &kContainerHiddenKey, container.backgroundColor ?: [NSNull null], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        if (container.backgroundColor) container.backgroundColor = UIColor.clearColor;
     }
-    CALayer *mask = objc_getAssociatedObject(sheet, &kMaskKey);
-    if (!mask) {
-        mask = [CALayer layer];
-        mask.frame = CGRectMake(0, 0, 1, 1);
-        mask.backgroundColor = UIColor.clearColor.CGColor;
-        objc_setAssociatedObject(sheet, &kMaskKey, mask, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(sheet, &kSavedMaskKey, sheet.layer.mask ?: (id)NSNull.null, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    if (presented && !(accountRoot && [accountRoot isDescendantOfView:presented])) {
+        CALayer *mask = objc_getAssociatedObject(presented, &kMaskKey);
+        if (!mask) {
+            mask = [CALayer layer];
+            mask.frame = CGRectMake(0, 0, 1, 1);
+            mask.backgroundColor = UIColor.clearColor.CGColor;
+            objc_setAssociatedObject(presented, &kMaskKey, mask, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(presented, &kSavedMaskKey, presented.layer.mask ?: (id)NSNull.null, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        if (presented.layer.mask != mask) presented.layer.mask = mask;
     }
-    if (sheet.layer.mask != mask) sheet.layer.mask = mask;
-    if (!sheet.hidden) sheet.hidden = YES;
-    if (sheet.userInteractionEnabled) sheet.userInteractionEnabled = NO;
-    sheet.accessibilityElementsHidden = YES;
+
     hideSystemDimming(container);
 }
 
-static void showPresentation(UIView *sheet, UIView *container) {
+static void showPresentation(UIViewController *host) {
+    if (!host) return;
+    UIPresentationController *presentation = host.presentationController;
+    UIView *container = presentation.containerView;
+    UIView *presented = presentation.presentedView ?: host.viewIfLoaded;
+    NSHashTable *drawerSubs = objc_getAssociatedObject(host, &kDrawerSubsKey);
+
+    void (^showView)(UIView *) = ^(UIView *view) {
+        if (!view) return;
+        view.hidden = NO;
+        view.userInteractionEnabled = YES;
+        view.accessibilityElementsHidden = NO;
+        view.alpha = 1;
+    };
+
+    if (container) {
+        id saved = objc_getAssociatedObject(container, &kContainerHiddenKey);
+        if (saved) {
+            container.backgroundColor = saved == (id)NSNull.null ? nil : saved;
+            objc_setAssociatedObject(container, &kContainerHiddenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+    for (UIView *sub in drawerSubs) showView(sub);
+    objc_setAssociatedObject(host, &kDrawerSubsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    showView(host.viewIfLoaded);
+    if (presented && presented != host.viewIfLoaded) {
+        id saved = objc_getAssociatedObject(presented, &kSavedMaskKey);
+        presented.layer.mask = saved == NSNull.null ? nil : saved;
+        objc_setAssociatedObject(presented, &kMaskKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(presented, &kSavedMaskKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        showView(presented);
+    }
     showSystemDimming(container);
-    if (!sheet) return;
-    id saved = objc_getAssociatedObject(sheet, &kSavedMaskKey);
-    sheet.alpha = 0;
-    sheet.hidden = NO;
-    sheet.layer.mask = saved == NSNull.null ? nil : saved;
-    objc_setAssociatedObject(sheet, &kMaskKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(sheet, &kSavedMaskKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    sheet.userInteractionEnabled = YES;
-    sheet.accessibilityElementsHidden = NO;
-    [UIView animateWithDuration:0.25 animations:^{ sheet.alpha = 1; }];
 }
 
 #pragma mark - scrape
+
+static NSString *symbolForRow(NSString *identifier, NSString *title) {
+    if ([identifier isEqualToString:@"AccountSwitching.AddAccountRow"]) return @"person.badge.plus";
+    if ([identifier isEqualToString:@"Components.UI.YourPlanRowSideDrawer"]) return @"crown.fill";
+    NSString *t = title.lowercaseString ?: @"";
+    if ([t containsString:@"statist"] || [t containsString:@"listening"] || [t containsString:@"wrapped"]
+        || [t containsString:@"ascolto"]) return @"chart.bar.fill";
+    if ([t containsString:@"recent"]) return @"clock.arrow.circlepath";
+    if ([t containsString:@"aggiorn"] || [t containsString:@"update"] || [t containsString:@"what's new"]
+        || [t containsString:@"whats new"]) return @"bell.fill";
+    if ([t containsString:@"impostaz"] || [t containsString:@"setting"] || [t containsString:@"privacy"]
+        || [t containsString:@"confidential"]) return @"gearshape.fill";
+    if ([t containsString:@"account"] || [t containsString:@"aggiungi"] || [t containsString:@"add"]) return @"person.badge.plus";
+    if ([t containsString:@"piano"] || [t containsString:@"plan"] || [t containsString:@"premium"]) return @"crown.fill";
+    return @"list.bullet";
+}
 
 static BOOL keepIdentifier(NSString *identifier) {
     if (!identifier.length) return NO;
@@ -154,8 +222,9 @@ static BOOL keepIdentifier(NSString *identifier) {
 }
 
 static BOOL shown(UIView *view, UIView *within) {
+    // The claimed drawer is held at alpha 0, so alpha is not a signal that a glyph or label is gone.
     for (UIView *v = view; v && v != within; v = v.superview) {
-        if (v.hidden || v.alpha < 0.01) return NO;
+        if (v.hidden) return NO;
     }
     return YES;
 }
@@ -186,32 +255,50 @@ static UIView *listRowIn(UIView *cell) {
     return found;
 }
 
+static UIImage *iconImageIn(UIView *control) {
+    __block UIImageView *glyph = nil;
+    __block UIView *encore = nil;
+    Class encoreClass = NSClassFromString(@"SPTEncoreIconView");
+    SGForEachView(control, ^(UIView *v) {
+        if (!glyph && [v isKindOfClass:UIImageView.class] && ((UIImageView *)v).image && v.bounds.size.width <= 40 && shown(v, control))
+            glyph = (UIImageView *)v;
+        if (!encore && ((encoreClass && [v isKindOfClass:encoreClass]) || [NSStringFromClass(v.class) containsString:@"EncoreIconView"])
+            && v.bounds.size.width >= 8 && v.bounds.size.width <= 40 && shown(v, control))
+            encore = v;
+    });
+    if (glyph.image) return glyph.image;
+    if (!encore || CGRectIsEmpty(encore.bounds)) return nil;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+    format.opaque = NO;
+    format.scale = UIScreen.mainScreen.scale;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:encore.bounds.size format:format];
+    UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [encore drawViewHierarchyInRect:encore.bounds afterScreenUpdates:NO];
+    }];
+    return image;
+}
+
 static SGRAccountRow *readCell(UIView *cell) {
     UIView *control = listRowIn(cell);
     if (!control) return nil;
     NSMutableArray<UILabel *> *labels = [NSMutableArray array];
-    __block UIImageView *glyph = nil;
     SGForEachView(control, ^(UIView *v) {
         if ([v isKindOfClass:UILabel.class] && ((UILabel *)v).text.length && shown(v, control))
             [labels addObject:(UILabel *)v];
-        if (!glyph && [v isKindOfClass:UIImageView.class] && ((UIImageView *)v).image && v.bounds.size.width <= 40 && shown(v, control))
-            glyph = (UIImageView *)v;
     });
     [labels sortUsingComparator:^NSComparisonResult(UILabel *a, UILabel *b) {
         CGPoint pa = [a convertPoint:CGPointZero toView:control], pb = [b convertPoint:CGPointZero toView:control];
         if (fabs(pa.y - pb.y) > 1) return pa.y < pb.y ? NSOrderedAscending : NSOrderedDescending;
         return pa.x < pb.x ? NSOrderedAscending : NSOrderedDescending;
     }];
-    NSString *title = labels.count ? labels.firstObject.text : control.accessibilityLabel;
+    NSString *title = labels.count ? labels.firstObject.text : nil;
     if (!title.length) {
-        // ListRow often puts the title only on accessibilityLabel ("Name, subtitle").
         NSString *label = control.accessibilityLabel;
         NSRange comma = [label rangeOfString:@", "];
         if (comma.location != NSNotFound) title = [label substringToIndex:comma.location];
         else title = label;
     }
     if (!title.length) return nil;
-    // Drop the Mod Settings overlay row App injects into the drawer.
     if ([title isEqualToString:@"Mod Settings"]) return nil;
 
     SGRAccountRow *row = [SGRAccountRow new];
@@ -225,7 +312,8 @@ static SGRAccountRow *readCell(UIView *cell) {
         if (comma.location != NSNotFound && comma.location < title.length + 2)
             row.subtitle = [label substringFromIndex:NSMaxRange(comma)];
     }
-    row.image = glyph.image;
+    row.symbol = symbolForRow(row.identifier, row.title);
+    row.image = iconImageIn(control);
     row.control = control;
     return row;
 }
@@ -351,6 +439,7 @@ static NSArray<SGRAccountRow *> *lastRows(void) {
         row.identifier = entry[@"id"];
         row.title = entry[@"title"];
         row.subtitle = [entry[@"subtitle"] isKindOfClass:NSString.class] ? entry[@"subtitle"] : nil;
+        row.symbol = [entry[@"symbol"] isKindOfClass:NSString.class] ? entry[@"symbol"] : symbolForRow(row.identifier, row.title);
         row.image = [entry[@"image"] isKindOfClass:UIImage.class] ? entry[@"image"] : nil;
         [rows addObject:row];
     }
@@ -364,6 +453,7 @@ static void keepRows(NSArray<SGRAccountRow *> *rows) {
     for (SGRAccountRow *row in rows) {
         NSMutableDictionary *entry = [@{@"id": row.identifier ?: @"", @"title": row.title ?: @""} mutableCopy];
         if (row.subtitle) entry[@"subtitle"] = row.subtitle;
+        if (row.symbol) entry[@"symbol"] = row.symbol;
         if (row.image) entry[@"image"] = row.image;
         [stored addObject:entry];
     }
@@ -401,10 +491,10 @@ static void revealDrawer(SGRAccountTakeover *t, NSString *why) {
     UIViewController *sheet = t.sheet;
     if (sheet.presentingViewController && !sheet.isBeingDismissed) {
         [sheet dismissViewControllerAnimated:YES completion:^{
-            showPresentation(sheetViewOf(t.host), t.host.presentationController.containerView);
+            showPresentation(t.host);
         }];
     } else {
-        showPresentation(sheetViewOf(t.host), t.host.presentationController.containerView);
+        showPresentation(t.host);
     }
 }
 
@@ -436,20 +526,17 @@ static void fireControl(UIView *control) {
     SGRActivate(control);
 }
 
-static void settle(SGRAccountTakeover *t) {
-    __weak SGRAccountTakeover *weak = t;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSettle * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        SGRAccountTakeover *strong = weak;
-        if (!strong || strong.revealed || strong.finished) return;
-        UIViewController *host = strong.host;
-        if (!host.presentingViewController || host.isBeingDismissed) return;
-        if (host.presentedViewController && host.presentedViewController != strong.sheet) {
-            // Spotify pushed a page onto the drawer; leave it.
-            strong.finished = YES;
-            return;
-        }
-        finishDrawer(strong, @"the row left it up", nil);
-    });
+// Hand the drawer back to Spotify before firing: destinations (Your plan, Settings, …) push onto
+// its stack or present from it. Settling by dismissing the drawer left those pages stuck on
+// "Loading". Clear the claim so layout stops re-hiding the drawer.
+static void handOffAndFire(SGRAccountTakeover *t, UIView *control) {
+    if (!t || t.finished || t.revealed) return;
+    t.finished = YES;
+    [t.poll invalidate];
+    t.poll = nil;
+    objc_setAssociatedObject(t.host, &kClaimKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    showPresentation(t.host);
+    fireControl(control);
 }
 
 static void applyScrape(SGRAccountTakeover *t) {
@@ -492,8 +579,8 @@ static void openSheet(SGRAccountTakeover *t) {
                 revealDrawer(strong, @"the profile row could not be fired");
                 return;
             }
-            fireControl(strong.profileControl);
-            settle(strong);
+            SGLog(@"redesign account: profile fired");
+            handOffAndFire(strong, strong.profileControl);
         });
     };
     sheet.onModSettings = ^{
@@ -529,8 +616,7 @@ static void openSheet(SGRAccountTakeover *t) {
                 return;
             }
             SGLog(@"redesign account: \"%@\" (%@) fired", row.title, row.identifier);
-            fireControl(control);
-            settle(strong);
+            handOffAndFire(strong, control);
         });
     };
     sheet.onDismissed = ^{
@@ -538,7 +624,10 @@ static void openSheet(SGRAccountTakeover *t) {
         finishDrawer(strong, @"the sheet was dismissed", nil);
     };
 
-    [host presentViewController:sheet animated:YES completion:nil];
+    [host presentViewController:sheet animated:YES completion:^{
+        hidePresentation(host, sheet);
+    }];
+    hidePresentation(host, sheet);
     SGLog(@"redesign account: sheet presented over the drawer");
 }
 
@@ -559,7 +648,8 @@ static void claimDrawer(UIViewController *list) {
     UIViewController *host = presentedHost(list);
     if (!host) return;
     if ([objc_getAssociatedObject(host, &kClaimKey) boolValue]) {
-        hidePresentation(sheetViewOf(host), host.presentationController.containerView);
+        SGRAccountTakeover *existing = objc_getAssociatedObject(host, &kTakeoverKey);
+        hidePresentation(host, existing.sheet);
         return;
     }
     if (!avatarTappedRecently()) return;
@@ -571,10 +661,11 @@ static void claimDrawer(UIViewController *list) {
     sgr_active = t;
     objc_setAssociatedObject(host, &kClaimKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(host, &kTakeoverKey, t, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    hidePresentation(sheetViewOf(host), host.presentationController.containerView);
+    hidePresentation(host, nil);
     SGLog(@"redesign account: drawer claimed");
 
     openSheet(t);
+    hidePresentation(host, t.sheet);
 
     __weak SGRAccountTakeover *weak = t;
     t.poll = [NSTimer scheduledTimerWithTimeInterval:kRowsPoll repeats:YES block:^(NSTimer *timer) {
@@ -604,8 +695,8 @@ static void claimDrawer(UIViewController *list) {
     UIViewController *list = (UIViewController *)self;
     UIViewController *host = presentedHost(list);
     if (![objc_getAssociatedObject(host, &kClaimKey) boolValue]) return;
-    hidePresentation(sheetViewOf(host), host.presentationController.containerView);
     SGRAccountTakeover *t = objc_getAssociatedObject(host, &kTakeoverKey);
+    hidePresentation(host, t.sheet);
     if (t && !t.sheetShown) openSheet(t);
     if (t && !t.finished && !t.revealed) applyScrape(t);
 }
