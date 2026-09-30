@@ -700,6 +700,7 @@ static BOOL sg_holdScrollLink;
 // A finger is down on the followed list. Reselecting a tab in the middle of that cancels the drag,
 // which is the swipe that was supposed to move the capsule.
 static BOOL sg_dragActive;
+static BOOL sg_forceScrollSearch;
 static void searchPageScroll(void);
 
 static void nameScrollView(void) {
@@ -716,12 +717,8 @@ static void nameScrollView(void) {
         static NSUInteger linked;
         if (linked++ < 12) SGLog(@"tab bar: list link %@ %@ %p", named == scroll ? @"set" : @"did not stick", NSStringFromClass(scroll.class), scroll);
     }
-    // Name every loaded stand-in page so a later tab select still hands UIKit the same list.
-    for (UIViewController *vc in tabs.viewControllers) {
-        if (!vc || vc == page) continue;
-        if ([vc contentScrollViewForEdge:NSDirectionalRectEdgeBottom] != scroll)
-            [vc setContentScrollView:scroll forEdge:NSDirectionalRectEdgeAll];
-    }
+    // Only the selected stand-in is named. Pointing every tab at one list left Home
+    // minimizing from Library's scroll (and the reverse) after a tab change.
     if (named == scroll) {
         static BOOL once;
         if (!once) {
@@ -1474,7 +1471,18 @@ static void sg_logLeadingTabs(SGRInlineTabs *tabs) {
         self.leadRedirected = NO;
         dispatch_async(dispatch_get_main_queue(), ^{ self.selectedTab = self.tabs.firstObject; });
     }
-    nameScrollView();
+    // Each tab keeps its own page list loaded; drop the previous follow so Home does not keep
+    // driving minimize while Library is showing (and the reverse).
+    if (previous && previous != tab) {
+        sg_pageScroll = nil;
+        sg_forceScrollSearch = YES;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            searchPageScroll();
+            nameScrollView();
+        });
+    } else {
+        nameScrollView();
+    }
 }
 
 // Held on Home, Mod Settings, as on the other glass bar.
@@ -1712,9 +1720,9 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
     nameScrollView();
 }
 
-// Minimize follows whatever vertical list is moving. No page allow list: Home, Search, Library,
-// playlists, albums, and anything else that scrolls. Horizontal shelves and the glass host are
-// ignored; everything else that moves on Y retargets UIKit's contentScrollView immediately.
+// Minimize follows one stable page list at a time. Retarget only when the finger starts a vertical
+// drag, the current list dies, or the tab / nav page changes — not on every contentOffset twitch
+// from Home shelves and nested cells (that is what made minimize work "sometimes").
 static BOOL isPrimarilyHorizontal(UIScrollView *scroll) {
     CGFloat bw = scroll.bounds.size.width, bh = scroll.bounds.size.height;
     CGFloat cw = scroll.contentSize.width, ch = scroll.contentSize.height;
@@ -1728,7 +1736,8 @@ static BOOL canDriveMinimize(UIScrollView *scroll) {
     if (scroll.pagingEnabled) return NO;
     if ([scroll isDescendantOfView:sg_inlineHost]) return NO;
     if (isPrimarilyHorizontal(scroll)) return NO;
-    if (scroll.bounds.size.height < 64) return NO;
+    // Tiny strips and chip rows are not the page list.
+    if (scroll.bounds.size.height < 120) return NO;
     UIView *container = sg_inlineHost.superview;
     if (container && [scroll isDescendantOfView:container]) return YES;
     // Content that is not under TabBarContainer still counts if it sits above the glass bar.
@@ -1739,58 +1748,51 @@ static BOOL canDriveMinimize(UIScrollView *scroll) {
     return CGRectGetMidY(scrollInWindow) < CGRectGetMinY(barInWindow) - 8;
 }
 
-static BOOL isNearerFront(UIView *a, UIView *b, UIView *container) {
-    if (!b) return YES;
-    if (!a) return NO;
-    if (!container) return YES;
-    NSMutableArray<UIView *> *pathA = [NSMutableArray array];
-    NSMutableArray<UIView *> *pathB = [NSMutableArray array];
-    for (UIView *v = a; v && v != container; v = v.superview) [pathA insertObject:v atIndex:0];
-    for (UIView *v = b; v && v != container; v = v.superview) [pathB insertObject:v atIndex:0];
-    NSUInteger n = MIN(pathA.count, pathB.count);
-    for (NSUInteger i = 0; i < n; i++) {
-        if (pathA[i] == pathB[i]) continue;
-        UIView *parent = i > 0 ? pathA[i - 1] : container;
-        NSUInteger ia = [parent.subviews indexOfObjectIdenticalTo:pathA[i]];
-        NSUInteger ib = [parent.subviews indexOfObjectIdenticalTo:pathB[i]];
-        return ia >= ib;
-    }
-    return pathA.count >= pathB.count;
+static CGFloat scrollVisibleArea(UIScrollView *scroll, UIView *root) {
+    if (!scroll || !root) return 0;
+    CGRect rect = [scroll convertRect:scroll.bounds toView:root];
+    CGRect clipped = CGRectIntersection(rect, root.bounds);
+    if (CGRectIsNull(clipped) || CGRectIsEmpty(clipped)) return 0;
+    return clipped.size.width * clipped.size.height;
 }
 
+// Outermost vertical list under the hit — nested section lists lose to the page collection view.
 static UIScrollView *scrollFromHit(UIView *root, CGPoint point) {
     UIView *hit = [root hitTest:point withEvent:nil];
     if (!hit || hit == sg_inlineHost || [hit isDescendantOfView:sg_inlineHost]) return nil;
+    UIScrollView *best = nil;
     for (UIView *v = hit; v && v != root; v = v.superview) {
-        if ([v isKindOfClass:UIScrollView.class] && canDriveMinimize((UIScrollView *)v)) return (UIScrollView *)v;
+        if ([v isKindOfClass:UIScrollView.class] && canDriveMinimize((UIScrollView *)v))
+            best = (UIScrollView *)v;
     }
-    return nil;
+    return best;
 }
 
 static void takePageScroll(UIScrollView *scroll, NSString *why) {
     if (!scroll || !canDriveMinimize(scroll)) return;
-    if (sg_pageScroll == scroll) return;
+    if (sg_pageScroll == scroll) {
+        nameScrollView();
+        return;
+    }
     sg_pageScroll = scroll;
     static NSUInteger logged;
     if (logged++ < 40) SGLog(@"tab bar: follows %@ %p %@ (%@)", NSStringFromClass(scroll.class), scroll, NSStringFromCGRect(scroll.frame), why);
     nameScrollView();
 }
 
+// Window attach only fills an empty follow, or promotes an outer page list over a nested one. It
+// never steals from a still-valid current list (that fight is what flapped Home vs Library).
 static void considerScrollView(UIScrollView *scroll) {
     if (!canDriveMinimize(scroll)) return;
     UIScrollView *current = sg_pageScroll;
     if (current == scroll) return;
-    UIView *container = sg_inlineHost.superview;
-    if (current.window && canDriveMinimize(current) && [scroll isDescendantOfView:current]) return;
-    if (current.window && [current isDescendantOfView:scroll]) {
-        takePageScroll(scroll, @"outer page list");
+    if (current.window && canDriveMinimize(current)) {
+        if ([scroll isDescendantOfView:current]) return;
+        if ([current isDescendantOfView:scroll]) takePageScroll(scroll, @"outer page list");
         return;
     }
-    if (current.window && canDriveMinimize(current) && container && !isNearerFront(scroll, current, container)) return;
-    takePageScroll(scroll, @"came on screen");
+    takePageScroll(scroll, @"no current list");
 }
-
-static BOOL sg_forceScrollSearch;
 
 static void searchPageScroll(void) {
     if (!sg_inline) return;
@@ -1811,22 +1813,33 @@ static void searchPageScroll(void) {
     last = now;
 
     CGFloat w = root.bounds.size.width, h = root.bounds.size.height;
+    CGFloat minArea = w * h * 0.2;
     CGPoint probes[] = {
         CGPointMake(w * 0.5, h * 0.28),
         CGPointMake(w * 0.5, h * 0.42),
         CGPointMake(w * 0.5, h * 0.55),
         CGPointMake(w * 0.5, h * 0.68),
     };
+    UIScrollView *best = nil;
+    CGFloat bestArea = 0;
     for (NSUInteger i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
         UIScrollView *front = scrollFromHit(root, probes[i]);
         if (!front) continue;
-        takePageScroll(front, @"front hit");
+        CGFloat area = scrollVisibleArea(front, root);
+        if (area > bestArea) {
+            best = front;
+            bestArea = area;
+        }
+    }
+    if (best && bestArea >= minArea) {
+        takePageScroll(best, @"front hit");
         return;
     }
 
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
-    UIScrollView *best = nil;
     NSUInteger found = 0, seen = 0;
+    best = nil;
+    bestArea = 0;
     while (queue.count) {
         UIView *view = queue.firstObject;
         [queue removeObjectAtIndex:0];
@@ -1836,10 +1849,11 @@ static void searchPageScroll(void) {
             UIScrollView *scroll = (UIScrollView *)view;
             if (canDriveMinimize(scroll)) {
                 found++;
-                if (!best) best = scroll;
-                else if ([best isDescendantOfView:scroll]) best = scroll;
-                else if ([scroll isDescendantOfView:best]) { /* keep outer */ }
-                else if (isNearerFront(scroll, best, root)) best = scroll;
+                CGFloat area = scrollVisibleArea(scroll, root);
+                if (area > bestArea) {
+                    best = scroll;
+                    bestArea = area;
+                }
             }
         }
         for (UIView *sub in view.subviews.reverseObjectEnumerator) [queue addObject:sub];
@@ -1863,6 +1877,7 @@ static void searchPageScroll(void) {
         CGPoint velocity = [pan velocityInView:scroll];
         CGPoint translation = [pan translationInView:scroll];
         BOOL vertical = fabs(velocity.y) >= fabs(velocity.x) || fabs(translation.y) >= fabs(translation.x);
+        // The finger's list is the only live retarget — not offset callbacks from other views.
         if (vertical && canDriveMinimize(scroll)) takePageScroll(scroll, @"dragged");
     }
     if (pan.state == UIGestureRecognizerStateEnded && scroll == sg_pageScroll) {
@@ -1901,18 +1916,6 @@ static char kDragKey;
 
 %group SGRInlinePlayerScroll
 %hook UIScrollView
-- (void)setContentOffset:(CGPoint)offset {
-    CGPoint old = self.contentOffset;
-    %orig;
-    if (!sg_inline || !sg_inlineTabs) return;
-    CGFloat dy = fabs(offset.y - old.y);
-    if (dy < 0.5) return;
-    UIScrollView *scroll = (UIScrollView *)self;
-    // Any vertical movement on a list that can drive minimize — no height floor, no page allow list.
-    if (!canDriveMinimize(scroll)) return;
-    if (fabs(offset.x - old.x) > dy) return; // horizontal pan
-    takePageScroll(scroll, @"offset");
-}
 - (void)didMoveToWindow {
     %orig;
     if (!self.window || !sg_inline) return;
@@ -1921,11 +1924,6 @@ static char kDragKey;
         [self.panGestureRecognizer addTarget:SGRScrollDrag.class action:@selector(dragged:)];
     }
     considerScrollView(self);
-    __weak UIScrollView *weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIScrollView *scroll = weakSelf;
-        if (scroll) considerScrollView(scroll);
-    });
 }
 %end
 %end

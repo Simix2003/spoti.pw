@@ -5,7 +5,6 @@
 #import "Core/SGCore.h"
 #import "Settings/SGPageStyle.h"
 #import <math.h>
-#import <objc/message.h>
 #import <objc/runtime.h>
 #import <string.h>
 
@@ -20,8 +19,6 @@ static const NSTimeInterval kBudget = 2.0;
 static const NSUInteger kMaxFile = 700 * 1024;
 static const NSUInteger kMaxString = 200;
 static const NSUInteger kMaxIvars = 40;
-static const NSUInteger kMaxDepth = 3;
-static const NSUInteger kMaxNodes = 500;
 static const NSUInteger kMaxInteresting = 48;
 static const NSUInteger kMaxVisited = 800;
 static const NSUInteger kMaxElements = 8;
@@ -162,11 +159,6 @@ static BOOL interestingClass(NSString *name) {
     return NO;
 }
 
-static BOOL isViewish(id value) {
-    return [value isKindOfClass:UIView.class] || [value isKindOfClass:CALayer.class] ||
-           [value isKindOfClass:UIViewController.class] || [value isKindOfClass:UIGestureRecognizer.class];
-}
-
 #pragma mark - UI helpers
 
 static UIWindow *keyWindow(void) {
@@ -275,188 +267,159 @@ static void presentFile(NSString *path) {
     [top presentViewController:sheet animated:YES completion:nil];
 }
 
-#pragma mark - object walk
+#pragma mark - object walk (crash-safe)
 
-static void dumpObject(id object, NSMutableString *out, NSString *indent, NSUInteger depth, NSMutableSet<NSValue *> *seen);
+// Only Foundation object encodings are read. Swift Props / ElementKit ivars are often
+// opaque `@` with no class name — object_getIvar + NSStringFromClass on those SIGSEGVs.
+// objc_msgSend of props/model did the same. We list name + encoding for those instead.
 
-static void dumpCollection(id collection, NSMutableString *out, NSString *indent, NSUInteger depth, NSMutableSet<NSValue *> *seen) {
-    if (plainFoundation(collection, NSArray.class) || plainFoundation(collection, NSOrderedSet.class)) {
-        NSArray *list = [collection isKindOfClass:NSArray.class] ? collection : [(NSOrderedSet *)collection array];
-        appendCapped(out, [NSString stringWithFormat:@"%@array %lu\n", indent, (unsigned long)list.count]);
-        NSUInteger n = MIN(list.count, kMaxElements);
-        for (NSUInteger i = 0; i < n && !budgetHit(); i++) {
-            id item = nil;
-            @try { item = list[i]; }
-            @catch (NSException *ex) { break; }
-            NSString *plain = describePlain(item);
-            if (plain) {
-                appendCapped(out, [NSString stringWithFormat:@"%@  [%lu] %@\n", indent, (unsigned long)i, plain]);
-            } else {
-                appendCapped(out, [NSString stringWithFormat:@"%@  [%lu] <%@>\n", indent, (unsigned long)i, NSStringFromClass(object_getClass(item))]);
-                if (!isViewish(item)) dumpObject(item, out, [indent stringByAppendingString:@"    "], depth + 1, seen);
-            }
-        }
-        if (list.count > n) appendCapped(out, [NSString stringWithFormat:@"%@  … %lu more\n", indent, (unsigned long)(list.count - n)]);
-        return;
-    }
-    if (plainFoundation(collection, NSDictionary.class)) {
-        NSDictionary *map = collection;
-        appendCapped(out, [NSString stringWithFormat:@"%@dictionary %lu\n", indent, (unsigned long)map.count]);
-        NSUInteger n = 0;
-        @try {
-            for (id key in map) {
-                if (n >= kMaxElements || budgetHit()) break;
-                NSString *keyText = plainFoundation(key, NSString.class) ? key : NSStringFromClass(object_getClass(key));
-                if (sensitiveName(keyText)) {
-                    appendCapped(out, [NSString stringWithFormat:@"%@  %@ [skipped]\n", indent, clip(keyText)]);
-                    n++;
-                    continue;
-                }
-                id item = map[key];
-                NSString *plain = describePlain(item);
-                if (plain) appendCapped(out, [NSString stringWithFormat:@"%@  %@=%@\n", indent, clip(keyText), plain]);
-                else {
-                    appendCapped(out, [NSString stringWithFormat:@"%@  %@ <%@>\n", indent, clip(keyText), NSStringFromClass(object_getClass(item))]);
-                    if (!isViewish(item)) dumpObject(item, out, [indent stringByAppendingString:@"    "], depth + 1, seen);
-                }
-                n++;
-            }
-        } @catch (NSException *ex) {
-            appendCapped(out, [NSString stringWithFormat:@"%@  unreadable\n", indent]);
-        }
-    }
+static NSString *declaredClass(const char *type) {
+    type = skipQualifiers(type);
+    if (!type || type[0] != '@' || type[1] != '"') return nil;
+    const char *start = type + 2;
+    const char *end = strchr(start, '"');
+    if (!end || end <= start) return nil;
+    return [[NSString alloc] initWithBytes:start length:(NSUInteger)(end - start) encoding:NSUTF8StringEncoding];
 }
 
-static void dumpObject(id object, NSMutableString *out, NSString *indent, NSUInteger depth, NSMutableSet<NSValue *> *seen) {
-    if (!object || budgetHit() || out.length >= kMaxFile || sg_nodes >= kMaxNodes) return;
-    NSString *plain = describePlain(object);
-    if (plain) {
-        appendCapped(out, [NSString stringWithFormat:@"%@%@\n", indent, plain]);
-        return;
-    }
-    if (plainFoundation(object, NSArray.class) || plainFoundation(object, NSDictionary.class) ||
-        plainFoundation(object, NSSet.class) || plainFoundation(object, NSOrderedSet.class)) {
-        dumpCollection(object, out, indent, depth, seen);
-        return;
-    }
-    NSString *className = NSStringFromClass(object_getClass(object));
-    if (depth >= kMaxDepth) {
-        appendCapped(out, [NSString stringWithFormat:@"%@<%@>\n", indent, className]);
-        return;
-    }
-    NSValue *key = [NSValue valueWithNonretainedObject:object];
-    if ([seen containsObject:key]) {
-        appendCapped(out, [NSString stringWithFormat:@"%@<%@> cycle\n", indent, className]);
-        return;
-    }
-    [seen addObject:key];
-    sg_nodes++;
-    if (isViewish(object) && depth > 0) {
-        appendCapped(out, [NSString stringWithFormat:@"%@<%@>\n", indent, className]);
-        return;
-    }
-    appendCapped(out, [NSString stringWithFormat:@"%@<%@>\n", indent, className]);
+static BOOL safeFoundationDeclared(NSString *name) {
+    if (!name.length) return NO;
+    static NSSet<NSString *> *ok;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        ok = [NSSet setWithArray:@[
+            @"NSString", @"NSMutableString", @"NSNumber", @"NSURL", @"NSDate", @"NSData", @"NSMutableData",
+            @"NSArray", @"NSMutableArray", @"NSDictionary", @"NSMutableDictionary",
+            @"NSSet", @"NSMutableSet", @"NSOrderedSet", @"NSMutableOrderedSet",
+            @"__NSCFString", @"__NSCFNumber", @"__NSCFBoolean", @"__NSCFArray", @"__NSCFDictionary",
+            @"NSTaggedPointerString", @"NSUUID", @"NSValue",
+        ]];
+    });
+    return [ok containsObject:name];
+}
 
+static void dumpSafeIvars(id object, NSMutableString *out, NSString *indent) {
+    if (!object || budgetHit()) return;
     Class cls = object_getClass(object);
     Class stop = NSObject.class;
-    if ([object isKindOfClass:UIView.class]) stop = UIView.class;
-    else if ([object isKindOfClass:UIViewController.class]) stop = UIViewController.class;
+    @try {
+        if ([object isKindOfClass:UIView.class]) stop = UIView.class;
+        else if ([object isKindOfClass:UIViewController.class]) stop = UIViewController.class;
+    } @catch (NSException *ex) {
+        return;
+    }
     NSUInteger levels = 0;
-    while (cls && cls != stop && cls != NSObject.class && levels < 6 && !budgetHit()) {
+    while (cls && cls != stop && cls != NSObject.class && levels < 5 && !budgetHit()) {
         unsigned count = 0;
         Ivar *ivars = class_copyIvarList(cls, &count);
         NSUInteger shown = 0;
         for (unsigned i = 0; ivars && i < count && shown < kMaxIvars && !budgetHit(); i++) {
             const char *raw = ivar_getName(ivars[i]);
             NSString *name = raw ? @(raw) : @"?";
+            const char *type = skipQualifiers(ivar_getTypeEncoding(ivars[i]));
             if (sensitiveName(name)) {
-                appendCapped(out, [NSString stringWithFormat:@"%@  ivar %@ [skipped]\n", indent, name]);
+                appendCapped(out, [NSString stringWithFormat:@"%@ivar %@ [skipped]\n", indent, name]);
+                shown++;
                 continue;
             }
-            const char *type = skipQualifiers(ivar_getTypeEncoding(ivars[i]));
             if (!type || !type[0]) continue;
             if (type[0] == '@' && type[1] == '?') {
-                appendCapped(out, [NSString stringWithFormat:@"%@  ivar %@ block\n", indent, name]);
+                appendCapped(out, [NSString stringWithFormat:@"%@ivar %@ block\n", indent, name]);
                 shown++;
                 continue;
             }
             if (type[0] == '@') {
+                NSString *declared = declaredClass(type);
+                if (!safeFoundationDeclared(declared)) {
+                    appendCapped(out, [NSString stringWithFormat:@"%@ivar %@ unread `%s`%@\n", indent, name, type,
+                                        declared ? [NSString stringWithFormat:@" declared %@", declared] : @""]);
+                    shown++;
+                    continue;
+                }
                 id value = nil;
                 @try { value = object_getIvar(object, ivars[i]); }
                 @catch (NSException *ex) {
-                    appendCapped(out, [NSString stringWithFormat:@"%@  ivar %@ unreadable\n", indent, name]);
+                    appendCapped(out, [NSString stringWithFormat:@"%@ivar %@ unreadable\n", indent, name]);
                     shown++;
                     continue;
                 }
                 NSString *asPlain = describePlain(value);
                 if (asPlain) {
-                    appendCapped(out, [NSString stringWithFormat:@"%@  ivar %@=%@\n", indent, name, asPlain]);
-                } else if (plainFoundation(value, NSArray.class) || plainFoundation(value, NSDictionary.class) ||
-                           plainFoundation(value, NSSet.class) || plainFoundation(value, NSOrderedSet.class)) {
-                    appendCapped(out, [NSString stringWithFormat:@"%@  ivar %@\n", indent, name]);
-                    dumpCollection(value, out, [indent stringByAppendingString:@"    "], depth, seen);
+                    appendCapped(out, [NSString stringWithFormat:@"%@ivar %@=%@\n", indent, name, asPlain]);
+                } else if (plainFoundation(value, NSArray.class)) {
+                    NSArray *list = value;
+                    appendCapped(out, [NSString stringWithFormat:@"%@ivar %@ array %lu\n", indent, name, (unsigned long)list.count]);
+                    NSUInteger n = MIN(list.count, kMaxElements);
+                    for (NSUInteger e = 0; e < n; e++) {
+                        NSString *itemPlain = describePlain(list[e]);
+                        appendCapped(out, [NSString stringWithFormat:@"%@  [%lu] %@\n", indent, (unsigned long)e,
+                                            itemPlain ?: [NSString stringWithFormat:@"<%@>", NSStringFromClass(object_getClass(list[e]))]]);
+                    }
+                } else if (plainFoundation(value, NSDictionary.class)) {
+                    NSDictionary *map = value;
+                    appendCapped(out, [NSString stringWithFormat:@"%@ivar %@ dictionary %lu\n", indent, name, (unsigned long)map.count]);
+                    NSUInteger n = 0;
+                    @try {
+                        for (id key in map) {
+                            if (n >= kMaxElements) break;
+                            NSString *keyText = plainFoundation(key, NSString.class) ? key : @"?";
+                            if (sensitiveName(keyText)) continue;
+                            appendCapped(out, [NSString stringWithFormat:@"%@  %@=%@\n", indent, clip(keyText),
+                                                describePlain(map[key]) ?: @"<?>"]);
+                            n++;
+                        }
+                    } @catch (NSException *ex) {}
                 } else if (!value) {
-                    appendCapped(out, [NSString stringWithFormat:@"%@  ivar %@ nil\n", indent, name]);
+                    appendCapped(out, [NSString stringWithFormat:@"%@ivar %@ nil declared %@\n", indent, name, declared]);
                 } else {
-                    appendCapped(out, [NSString stringWithFormat:@"%@  ivar %@ <%@>\n", indent, name, NSStringFromClass(object_getClass(value))]);
-                    if (!isViewish(value)) dumpObject(value, out, [indent stringByAppendingString:@"    "], depth + 1, seen);
+                    appendCapped(out, [NSString stringWithFormat:@"%@ivar %@ <%@>\n", indent, name, NSStringFromClass(object_getClass(value))]);
                 }
                 shown++;
-            } else {
-                NSString *text = nil;
-                @try { text = primitiveIvar(object, ivars[i]); }
-                @catch (NSException *ex) { text = nil; }
-                if (text) appendCapped(out, [NSString stringWithFormat:@"%@  ivar %@=%@\n", indent, name, text]);
-                shown++;
+                continue;
             }
+            // Structs / primitives: print encoding; try primitive read when size is known.
+            NSString *text = nil;
+            @try { text = primitiveIvar(object, ivars[i]); }
+            @catch (NSException *ex) { text = nil; }
+            if (text) appendCapped(out, [NSString stringWithFormat:@"%@ivar %@=%@\n", indent, name, text]);
+            else appendCapped(out, [NSString stringWithFormat:@"%@ivar %@ type `%s`\n", indent, name, type]);
+            shown++;
         }
         free(ivars);
         cls = class_getSuperclass(cls);
         levels++;
-    }
-
-    // Whitelisted zero-arg getters that often hold Props / model on Element views.
-    static NSArray<NSString *> *getters;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        getters = @[@"props", @"model", @"viewModel", @"content", @"configuration", @"item", @"row", @"data", @"event", @"context", @"state"];
-    });
-    for (NSString *getter in getters) {
-        if (budgetHit()) break;
-        SEL sel = NSSelectorFromString(getter);
-        if (![object respondsToSelector:sel]) continue;
-        Method method = class_getInstanceMethod(object_getClass(object), sel);
-        if (!method || method_getNumberOfArguments(method) != 2) continue;
-        const char *type = skipQualifiers(method_getTypeEncoding(method));
-        if (!type || type[0] != '@') continue;
-        id value = nil;
-        @try {
-            id (*fn)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
-            value = fn(object, sel);
-        } @catch (NSException *ex) {
-            continue;
-        }
-        NSString *asPlain = describePlain(value);
-        if (asPlain) {
-            appendCapped(out, [NSString stringWithFormat:@"%@  get %@=%@\n", indent, getter, asPlain]);
-        } else if (!value) {
-            appendCapped(out, [NSString stringWithFormat:@"%@  get %@=nil\n", indent, getter]);
-        } else {
-            appendCapped(out, [NSString stringWithFormat:@"%@  get %@ <%@>\n", indent, getter, NSStringFromClass(object_getClass(value))]);
-            if (!isViewish(value)) dumpObject(value, out, [indent stringByAppendingString:@"    "], depth + 1, seen);
-        }
+        sg_nodes++;
     }
 }
 
+static void dumpLabelsOn(UIView *view, NSMutableString *out, NSString *indent, NSUInteger depth, NSUInteger *visited) {
+    if (!view || depth > 6 || *visited >= 120 || budgetHit()) return;
+    (*visited)++;
+    @try {
+        if (view.hidden) return;
+        if ([view isKindOfClass:UILabel.class]) {
+            NSString *text = ((UILabel *)view).text;
+            if (text.length) appendCapped(out, [NSString stringWithFormat:@"%@label \"%@\"\n", indent, clean(text)]);
+        }
+        NSString *al = view.accessibilityLabel;
+        if (al.length && al.length < 120) appendCapped(out, [NSString stringWithFormat:@"%@a11y \"%@\"\n", indent, clean(al)]);
+    } @catch (NSException *ex) {
+        return;
+    }
+    NSArray *subs = nil;
+    @try { subs = [view.subviews copy]; }
+    @catch (NSException *ex) { return; }
+    for (UIView *sub in subs) dumpLabelsOn(sub, out, indent, depth + 1, visited);
+}
+
 static void collectInteresting(UIView *view, NSMutableArray<UIView *> *hits, NSUInteger depth, NSUInteger *visited) {
-    if (!view || depth > 16 || *visited >= kMaxVisited || hits.count >= kMaxInteresting || budgetHit()) return;
+    if (!view || depth > 14 || *visited >= kMaxVisited || hits.count >= kMaxInteresting || budgetHit()) return;
     (*visited)++;
     @try {
         if (view.hidden || view.alpha < 0.01) return;
         NSString *name = NSStringFromClass(object_getClass(view));
         if (interestingClass(name)) [hits addObject:view];
         else if ([view isKindOfClass:UICollectionViewCell.class] || [view isKindOfClass:UITableViewCell.class]) {
-            // A cell whose content is interesting still counts even if the cell class is stock.
             for (UIView *sub in view.subviews) {
                 if (interestingClass(NSStringFromClass(object_getClass(sub)))) {
                     [hits addObject:view];
@@ -499,6 +462,18 @@ static void dumpClassIndex(NSMutableString *out) {
     }
     free(classes);
     appendCapped(out, [NSString stringWithFormat:@"classes listed: %lu\n\n", (unsigned long)kept]);
+}
+
+static void flushOut(NSFileHandle *file, NSMutableString *out) {
+    if (!file || !out.length) return;
+    NSData *data = [out dataUsingEncoding:NSUTF8StringEncoding];
+    @try {
+        [file writeData:data];
+        [file synchronizeFile];
+    } @catch (NSException *ex) {
+        SGLog(@"stats deep: write stopped (%@)", ex.name);
+    }
+    [out setString:@""];
 }
 
 #pragma mark - run
@@ -545,7 +520,6 @@ void SGStatsDeepDump(void) {
     @try { root = leaf.isViewLoaded ? leaf.view : nil; }
     @catch (NSException *ex) { root = nil; }
     NSString *title = navTitle(leaf);
-    // Prefer nav bar a11y when the VC title is empty (stats pages).
     if (!title.length) {
         @try {
             UINavigationController *nav = leaf.navigationController ?: ([leaf isKindOfClass:UINavigationController.class] ? (UINavigationController *)leaf : nil);
@@ -556,20 +530,42 @@ void SGStatsDeepDump(void) {
     }
     NSString *hint = pageHint(title);
 
+    NSDateFormatter *fileStamp = [NSDateFormatter new];
+    fileStamp.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    fileStamp.dateFormat = @"yyyyMMdd-HHmmss";
+    NSString *dir = documentsDir();
+    NSString *fileName = [NSString stringWithFormat:@"spotifyplus-stats-deep-%@-%@.txt", [fileStamp stringFromDate:NSDate.date], hint];
+    NSString *path = dir ? [dir stringByAppendingPathComponent:fileName] : nil;
+    if (!path || ![NSFileManager.defaultManager createFileAtPath:path contents:nil attributes:nil]) {
+        SGLog(@"stats deep: could not write (create)");
+        toast(@"Deep probe could not save");
+        return;
+    }
+    NSFileHandle *file = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!file) {
+        SGLog(@"stats deep: could not write (open)");
+        toast(@"Deep probe could not save");
+        return;
+    }
+    sg_lastDeepPath = path;
+
     NSMutableString *out = [NSMutableString string];
     NSDateFormatter *stamp = [NSDateFormatter new];
     stamp.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
     stamp.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZ";
     NSString *spotify = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
     appendCapped(out, [NSString stringWithFormat:
-        @"spotifyplus stats deep probe\ntime: %@\nspotify: %@\nios: %@\nbuild: %s %s\nivar + whitelisted getter walk on HighlightsStats ElementKit views. No valueForKey.\nleaf: %@\ntitle: \"%@\"\nhint: %@\n\n",
+        @"spotifyplus stats deep probe\ntime: %@\nspotify: %@\nios: %@\nbuild: %s %s\ncrash-safe: Foundation ivars only; Swift/ElementKit Props listed as unread encodings. No objc_msgSend getters, no valueForKey.\nleaf: %@\ntitle: \"%@\"\nhint: %@\n\n",
         [stamp stringFromDate:NSDate.date], spotify, UIDevice.currentDevice.systemVersion, SG_BUILD_BRANCH, SG_BUILD,
         NSStringFromClass(object_getClass(leaf)), clean(title ?: @""), hint]);
+    flushOut(file, out);
 
     @try { dumpClassIndex(out); }
     @catch (NSException *ex) {
         appendCapped(out, [NSString stringWithFormat:@"class index stopped (%@)\n\n", ex.name]);
     }
+    flushOut(file, out);
+    SGLog(@"stats deep: step classes");
 
     NSMutableArray<UIView *> *hits = [NSMutableArray array];
     NSUInteger visited = 0;
@@ -579,58 +575,61 @@ void SGStatsDeepDump(void) {
         appendCapped(out, [NSString stringWithFormat:@"collect stopped (%@)\n", ex.name]);
     }
     appendCapped(out, [NSString stringWithFormat:@"== interesting views (%lu of %lu visited)\n", (unsigned long)hits.count, (unsigned long)visited]);
+    flushOut(file, out);
+    SGLog(@"stats deep: step views %lu", (unsigned long)hits.count);
 
-    NSMutableSet<NSValue *> *seen = [NSMutableSet set];
     NSUInteger index = 0;
     for (UIView *view in hits) {
-        if (budgetHit() || out.length >= kMaxFile) break;
-        NSString *name = NSStringFromClass(object_getClass(view));
+        if (budgetHit()) break;
+        NSString *name = @"?";
         NSString *label = nil;
         NSString *ident = nil;
+        CGRect frame = CGRectZero;
         @try {
+            name = NSStringFromClass(object_getClass(view));
             label = view.accessibilityLabel;
             ident = view.accessibilityIdentifier;
-        } @catch (NSException *ex) {}
-        appendCapped(out, [NSString stringWithFormat:@"\n-- [%lu] %@ %@ a11y id=%@ label=\"%@\"\n",
-                            (unsigned long)index, name, NSStringFromCGRect(view.frame),
-                            clean(ident ?: @""), clean(label ?: @"")]);
-        @try { dumpObject(view, out, @"  ", 0, seen); }
-        @catch (NSException *ex) {
-            appendCapped(out, [NSString stringWithFormat:@"  dump stopped (%@)\n", ex.name]);
+            frame = view.frame;
+        } @catch (NSException *ex) {
+            appendCapped(out, [NSString stringWithFormat:@"\n-- [%lu] unreadable (%@)\n", (unsigned long)index, ex.name]);
+            flushOut(file, out);
+            index++;
+            continue;
         }
-        // Prefer dumping the first interesting child content of a stock cell.
+        appendCapped(out, [NSString stringWithFormat:@"\n-- [%lu] %@ %@ a11y id=%@ label=\"%@\"\n",
+                            (unsigned long)index, name, NSStringFromCGRect(frame),
+                            clean(ident ?: @""), clean(label ?: @"")]);
+        @try { dumpSafeIvars(view, out, @"  "); }
+        @catch (NSException *ex) {
+            appendCapped(out, [NSString stringWithFormat:@"  ivars stopped (%@)\n", ex.name]);
+        }
+        NSUInteger labelVisits = 0;
+        @try { dumpLabelsOn(view, out, @"  ", 0, &labelVisits); }
+        @catch (NSException *ex) {}
         if ([view isKindOfClass:UICollectionViewCell.class] || [view isKindOfClass:UITableViewCell.class]) {
             @try {
                 UIView *content = [(id)view contentView];
                 NSArray<UIView *> *kids = content.subviews.count ? content.subviews : view.subviews;
                 for (UIView *sub in kids) {
-                    if (!interestingClass(NSStringFromClass(object_getClass(sub)))) continue;
-                    appendCapped(out, [NSString stringWithFormat:@"  content %@\n", NSStringFromClass(object_getClass(sub))]);
-                    dumpObject(sub, out, @"    ", 0, seen);
+                    NSString *subName = NSStringFromClass(object_getClass(sub));
+                    if (!interestingClass(subName)) continue;
+                    appendCapped(out, [NSString stringWithFormat:@"  content %@\n", subName]);
+                    dumpSafeIvars(sub, out, @"    ");
                     break;
                 }
             } @catch (NSException *ex) {}
         }
+        flushOut(file, out);
         index++;
     }
-    appendCapped(out, [NSString stringWithFormat:@"\nnodes: %lu\nbudget hit: %@\n",
-                        (unsigned long)sg_nodes, budgetHit() ? @"yes" : @"no"]);
+    appendCapped(out, [NSString stringWithFormat:@"\nnodes: %lu\nbudget hit: %@\nviews written: %lu\n",
+                        (unsigned long)sg_nodes, budgetHit() ? @"yes" : @"no", (unsigned long)index]);
+    flushOut(file, out);
+    @try { [file closeFile]; }
+    @catch (NSException *ex) {}
 
-    NSDateFormatter *fileStamp = [NSDateFormatter new];
-    fileStamp.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-    fileStamp.dateFormat = @"yyyyMMdd-HHmmss";
-    NSString *dir = documentsDir();
-    NSString *name = [NSString stringWithFormat:@"spotifyplus-stats-deep-%@-%@.txt", [fileStamp stringFromDate:NSDate.date], hint];
-    NSString *path = dir ? [dir stringByAppendingPathComponent:name] : nil;
-    NSError *error = nil;
-    if (!path || ![out writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
-        SGLog(@"stats deep: could not write (%@)", error.domain ?: @"file");
-        toast(@"Deep probe could not save");
-        return;
-    }
-    sg_lastDeepPath = path;
     SGLog(@"stats deep: saved %@ title %@, %lu views, %lu nodes",
-          name, title.length ? title : @"(none)", (unsigned long)hits.count, (unsigned long)sg_nodes);
+          fileName, title.length ? title : @"(none)", (unsigned long)index, (unsigned long)sg_nodes);
     toast(@"Deep probe saved");
     presentFile(path);
 }

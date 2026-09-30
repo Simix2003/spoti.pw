@@ -30,8 +30,8 @@ The page hint is `home`, `minuti`, `brani`, `brani-amici`, `artisti`, `artisti-a
 ## What Deep contains
 
 - Loaded classes whose names contain `HighlightsStats`, with ivar names and type encodings (methods are not called).
-- Every on-screen view whose class looks like HighlightsStats / StatsDetails / Timeline / ElementKit content: class, frame, a11y, then `object_getIvar` walk (depth 3) and whitelisted getters (`props`, `model`, `viewModel`, `content`, …).
-- No `valueForKey:`. A 2 s time budget and size cap stop the walk.
+- Every on-screen HighlightsStats / StatsDetails / ElementKit-looking view: class, frame, a11y, nested labels, and **safe** ivars only (Foundation strings/numbers/collections). Swift / ElementKit Props show as `ivar … unread \`…\`` — reading those as objects crashed Spotify, so values are not dereferenced.
+- No `valueForKey:`, no `objc_msgSend` of `props`/`model`. File is flushed after each view so a later failure still leaves a partial dump.
 
 ## What Probe contains
 
