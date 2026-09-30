@@ -42,6 +42,11 @@ Entries for the `beta-simix-overnight` fork. Release Please does not version the
 * **Changed:** The crossfade runs for 0.45s. While it runs, the warp's display link prefers 120fps. Its maximum stays 120, including while the picture is only drifting (preferred 30), so nothing caps the player's transitions at 60. A sharper copy of the same picture (the bar's cover, then the player's) no longer starts a second fade.
 * **Known limits:** `PlayerArtwork.x` was not given its own transition. The square cover is one `CoverArtCellImpl` per queued track and the swipe between them is Spotify's list; a fade on the cell would run against that. Not compiled, and not run in `harness/player/` (that harness needs the iOS simulator). Reduce Motion still keeps the fade and drops the drift, which is what `SGRWarpPaceStill` already did.
 
+### Playlist Mix
+
+* **Changed:** On a redesigned playlist, Mix is the first row of the ⋯ sheet, above Sort. The row still fires Spotify's own `ListPlatform.ToolbarActions.MixButton` pill. Its title is the shortest string already on that pill (the word it draws), and a longer string Spotify already has on the pill is the line under it, so a status such as "Playlist mixata" is not the only label. A pill that reports itself selected draws the waveform in the accent with a check. The glyph is a waveform. No new wording is invented, and the pill row over the tracks stays closed up (`PlaylistRows.x`).
+* **Known limits:** Not compiled and not run on a phone or in `harness/playlist/` (that harness needs the iOS simulator). If the pill has only one string, the row has one line, that string. On and off are read from `selected` and `UIAccessibilityTraitSelected` only; a pill that shows its state some other way stays drawn as off. Someone else's playlist still has no Mix row, because Spotify draws no pill there.
+
 ## [0.22.0](https://github.com/skopevoj/spoti.pw/compare/v0.21.1...v0.22.0) (2026-09-23)
 
 

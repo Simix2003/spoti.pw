@@ -13,8 +13,10 @@
 // The pills over the first row (own-playlist/01.txt:33) are a cell of the list: Add, Mix, Notes, Video,
 // Edit, Sort and Name & details. The row is closed up -- ListUXPlatform_LayoutKit.ListLayout gives every
 // item its height, so the cell can only close up where the layout asks it how tall it wants to be -- and
-// Sort and Mix are put on the ⋯ sheet instead (PlaylistMenu.x), where the rest of the row already is. The
-// cell is handed over as it lays out, so the sheet has Spotify's own buttons to fire.
+// Sort and Mix are put on the ⋯ sheet instead (PlaylistMenu.x), where the rest of the row already is. Mix
+// is that sheet's first row: its word, and a longer line when the pill already has one, are read off
+// Spotify's own pill, and the row fires that pill. The cell is handed over as it lays out, so the sheet
+// has Spotify's own buttons to fire.
 //
 // Not every cell of the list is a track row. Under the tracks Spotify puts the extender -- Recommended
 // songs, its rows and Refresh (ListUXPlatformConsumers_PlaylistExtenderImpl) -- and its heading and its
