@@ -48,7 +48,7 @@ static NSString *wordIn(UIView *button) {
 #pragma mark - the Play capsule
 
 // How far the halo reaches past the capsule. The action row leaves 16pt between buttons.
-static const CGFloat kGlowSpread = 14;
+static const CGFloat kGlowSpread = 7;
 
 static UIColor *sgr_shiftHue(UIColor *color, CGFloat turn) {
     CGFloat h = 0, s = 0, b = 0, a = 1;
@@ -143,9 +143,9 @@ static UIImage *sgr_glowRing(CGSize capsule, CGFloat spread) {
     CGRect edge = CGRectInset(CGRectMake(0, 0, size.width, size.height), spread, spread);
     edge = CGRectInset(edge, 1.5, 1.5);
     UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:edge cornerRadius:edge.size.height / 2];
-    CGContextSetShadowWithColor(ctx, CGSizeZero, 8, [UIColor colorWithWhite:1 alpha:0.95].CGColor);
-    CGContextSetStrokeColorWithColor(ctx, [UIColor colorWithWhite:1 alpha:0.85].CGColor);
-    CGContextSetLineWidth(ctx, 4);
+    CGContextSetShadowWithColor(ctx, CGSizeZero, 5, [UIColor colorWithWhite:1 alpha:0.28].CGColor);
+    CGContextSetStrokeColorWithColor(ctx, [UIColor colorWithWhite:1 alpha:0.18].CGColor);
+    CGContextSetLineWidth(ctx, 1.25);
     CGContextAddPath(ctx, path.CGPath);
     CGContextStrokePath(ctx);
     UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
@@ -179,6 +179,7 @@ static UIImage *sgr_glowRing(CGSize capsule, CGFloat spread) {
     _mixGlow = on;
     if (onChanged || seedChanged || imageChanged) [self sgr_resolveGlowColors];
     [self sgr_updateGlow];
+    [self setNeedsLayout];
 }
 
 - (BOOL)mixGlow {
@@ -226,7 +227,9 @@ static UIImage *sgr_glowRing(CGSize capsule, CGFloat spread) {
     static NSString *lastWhy;
     if (![why isEqualToString:lastWhy]) {
         lastWhy = why;
-        SGLog(@"redesign playlist: play glow %@ (bounds %@)", why, NSStringFromCGRect(self.bounds));
+        SGLog(@"redesign playlist: play glow %@ (%@, bounds %@)",
+              [why isEqualToString:@"on"] || [why isEqualToString:@"reduce motion"] ? @"applied" : @"skipped",
+              why, NSStringFromCGRect(self.bounds));
     }
     if (!_mixGlow || empty) {
         [_spin removeAllAnimations];
@@ -282,23 +285,23 @@ static UIImage *sgr_glowRing(CGSize capsule, CGFloat spread) {
     if (reduce) {
         [_spin removeAnimationForKey:@"spin"];
         [_spin removeAnimationForKey:@"breathe"];
-        _spin.opacity = 0.9;
+        _spin.opacity = 0.32;
         return;
     }
     if (![_spin animationForKey:@"spin"]) {
         CABasicAnimation *spin = [CABasicAnimation animationWithKeyPath:@"transform.rotation.z"];
         spin.fromValue = @0;
         spin.toValue = @(6.283185307179586);
-        spin.duration = 3.8;
+        spin.duration = 9;
         spin.repeatCount = HUGE_VALF;
         spin.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionLinear];
         [_spin addAnimation:spin forKey:@"spin"];
     }
     if (![_spin animationForKey:@"breathe"]) {
         CABasicAnimation *breathe = [CABasicAnimation animationWithKeyPath:@"opacity"];
-        breathe.fromValue = @0.72;
-        breathe.toValue = @1;
-        breathe.duration = 2.6;
+        breathe.fromValue = @0.16;
+        breathe.toValue = @0.38;
+        breathe.duration = 3.4;
         breathe.autoreverses = YES;
         breathe.repeatCount = HUGE_VALF;
         breathe.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];

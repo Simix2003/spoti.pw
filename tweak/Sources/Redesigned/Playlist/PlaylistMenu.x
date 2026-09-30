@@ -169,6 +169,24 @@ static void pillsIn(UIView *toolbar, UIView **sort, UIView **mix) {
     *mix = foundMix;
 }
 
+// The row the list has already handed over, or the one sitting in the page now. A zero-height
+// curation cell is measured before it is laid out, so the pill can be found without a scroll.
+static UIView *heldCuration(UIView *page) {
+    if (!page) return nil;
+    UIView *held = objc_getAssociatedObject(page, &kToolbarKey);
+    if (held.window) return held;
+    UIView *found = SGRFindByIdentifier(page, SGRPlaylistCurationIdentifier, NULL);
+    if (found) {
+        objc_setAssociatedObject(page, &kToolbarKey, found, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return found;
+    }
+    return held;
+}
+
+BOOL SGRPlaylistCurationSeen(UIView *page) {
+    return heldCuration(page) != nil;
+}
+
 BOOL SGRPlaylistIsMixed(UIView *page) {
     static NSString *last;
     if (!page) {
@@ -178,11 +196,11 @@ BOOL SGRPlaylistIsMixed(UIView *page) {
         }
         return NO;
     }
-    UIView *toolbar = objc_getAssociatedObject(page, &kToolbarKey);
+    UIView *toolbar = heldCuration(page);
     if (!toolbar) {
         if (![last isEqualToString:@"no-toolbar"]) {
             last = @"no-toolbar";
-            SGLog(@"redesign playlist: mixed no, the curation row has not been seen, glow off");
+            SGLog(@"redesign playlist: play glow skipped, the curation row has not been seen");
         }
         return NO;
     }
@@ -214,6 +232,8 @@ void SGRPlaylistTakeCuration(UIView *cell) {
     objc_setAssociatedObject(page, &kToolbarKey, toolbar, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     UIView *sort = nil, *mix = nil;
     pillsIn(toolbar, &sort, &mix);
+    // The header's first pass usually ran before this cell existed, with the glow left off.
+    SGRPlaylistRefreshPlayGlow(page);
     static BOOL logged;
     if (!logged) {
         logged = YES;
@@ -440,12 +460,7 @@ static UITableView *tableIn(UIView *root, int depth) {
 // had been opened and closed a few times (device 2026-09-20). The walk is the page's live views, which is
 // the cells on screen and no more, and it is done once per sheet.
 static UIView *curationIn(UIView *page) {
-    UIView *held = objc_getAssociatedObject(page, &kToolbarKey);
-    // A reload replaces the row; the one held from before is out of the window and its Mix answers nothing.
-    if (held.window) return held;
-    UIView *found = SGRFindByIdentifier(page, SGRPlaylistCurationIdentifier, NULL);
-    if (found) objc_setAssociatedObject(page, &kToolbarKey, found, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    return found ?: held;
+    return heldCuration(page);
 }
 
 // The page this sheet belongs to, decided once and only from the ⋯ that opened it. What the page has to
