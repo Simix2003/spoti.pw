@@ -225,15 +225,36 @@ static UIImage *searchTabImage(UIView *item, BOOL active) {
 
 static BOOL isSearchItem(UIView *item) {
     if (!item) return NO;
-    // Spotify's own id (trees/home: TabBar.Item.Search) is the surest mark.
-    NSString *ident = item.accessibilityIdentifier;
-    if ([ident isEqualToString:@"TabBar.Item.Search"] || [ident hasSuffix:@".Search"]) return YES;
+    // Spotify's id can sit on a descendant (trees/home: TabBar.Item.Search), not on the arranged item.
+    __block BOOL byId = NO;
+    SGForEachView(item, ^(UIView *v) {
+        if (byId) return;
+        NSString *ident = v.accessibilityIdentifier;
+        if (!ident.length) return;
+        if ([ident isEqualToString:@"TabBar.Item.Search"] || [ident hasSuffix:@".Search"]
+            || [ident rangeOfString:@"Item.Search"].location != NSNotFound) byId = YES;
+    });
+    if (byId) return YES;
+
     id icon = encoreIconOf(iconIn(item));
     NSString *name = [icon respondsToSelector:@selector(name)] ? [icon name] : nil;
     if (name.length && [name rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
-    // Localized titles still name the tab; a custom tab whose title happens to be Search is rare.
+
     NSString *title = labelIn(item).text;
-    if (title.length && [title rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    // Spotify's own order is Home, Search, Library, Create; stock[1] is Search in every locale.
+    NSArray<NSString *> *stock = SGRNavbarStock();
+    if (title.length && stock.count >= 2 && [title isEqualToString:stock[1]]) return YES;
+    if (title.length) {
+        static NSArray<NSString *> *names;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            names = @[@"Search", @"Cerca", @"Buscar", @"Suche", @"Recherche", @"Zoeken",
+                      @"Pesquisar", @"Haku", @"Søk", @"Sök", @"Szukaj", @"Arama", @"搜索", @"検索", @"검색"];
+        });
+        for (NSString *n in names) {
+            if ([title caseInsensitiveCompare:n] == NSOrderedSame) return YES;
+        }
+    }
     return NO;
 }
 
@@ -1417,16 +1438,31 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
     // circle, and the regular tab that ends up last in the leading platter is the one UIKit lays
     // out with the search button's metrics: image view 1x1, title the first letter. Regular tabs
     // stay in Spotify's order; Search is appended so it is the last tab.
-    if (![sources isEqualToArray:tabs.stockOrder]) {
+    // Rebuild when Search is newly detected too: the first pass can miss the icon / stock list, and
+    // leaving every tab as a plain UITab keeps one unified platter.
+    BOOL hasSearchTab = NO;
+    for (UITab *tab in tabs.tabs) {
+        if ([tab isKindOfClass:UISearchTab.class]) { hasSearchTab = YES; break; }
+    }
+    BOOL wantsSearch = NO;
+    for (UIView *source in sources) {
+        if (isSearchItem(source)) { wantsSearch = YES; break; }
+    }
+    if (![sources isEqualToArray:tabs.stockOrder] || wantsSearch != hasSearchTab) {
         NSMutableArray<UIView *> *ordered = [NSMutableArray array];
         NSMutableArray<UITab *> *list = [NSMutableArray array];
         UIView *searchSource = nil;
         UITab *searchTabBuilt = nil;
         NSMutableArray<NSString *> *platterNames = [NSMutableArray array];
         NSString *circle = @"none";
+        NSMutableString *detect = [NSMutableString stringWithString:@"tab bar: detect"];
         for (UIView *source in sources) {
             NSString *full = labelIn(source).text ?: @"";
             BOOL search = isSearchItem(source);
+            id icon = encoreIconOf(iconIn(source));
+            NSString *iconName = [icon respondsToSelector:@selector(name)] ? [icon name] : @"-";
+            [detect appendFormat:@"\n  \"%@\" icon %@ search %d id %@", full, iconName, search,
+                 source.accessibilityIdentifier ?: @"-"];
             NSString *title = hideLabels ? @"" : (kNavbarCustomLayout && !search ? sg_titleThatFits(full, room) : full);
             UITab *tab;
             // Only Search is a UISearchTab. The last visible item used to become the circle, so
@@ -1440,6 +1476,9 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
                 // Spotify's field. The circle only selects; shouldSelectTab forwards to Spotify and
                 // asks for the field.
                 searchTab.automaticallyActivatesSearch = NO;
+                // Pinned puts Search on the trailing edge as its own circle; Fixed keeps the rest
+                // in the leading platter so Automatic does not stretch them into one block.
+                searchTab.preferredPlacement = UITabPlacementPinned;
                 tab = searchTab;
                 searchSource = source;
                 searchTabBuilt = tab;
@@ -1449,7 +1488,7 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
                 UIImage *glyph = glyphOf(source, NO);
                 tab = [[UITab alloc] initWithTitle:title image:glyph identifier:identifier
                             viewControllerProvider:^UIViewController *(UITab *t) { return inlinePage(t); }];
-                if (kNavbarCustomLayout) tab.preferredPlacement = UITabPlacementFixed;
+                tab.preferredPlacement = UITabPlacementFixed;
                 [ordered addObject:source];
                 [list addObject:tab];
                 [platterNames addObject:[NSString stringWithFormat:@"%@%@", title, glyph ? @"" : @" (no glyph)"]];
@@ -1462,10 +1501,14 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
         tabs.stockOrder = sources;
         tabs.sources = ordered;
         tabs.tabs = list;
+        SGLogLong(@"navbar", detect);
         SGLog(@"tab bar: %lu tabs, platter %@, circle %@ last, slot %.0f, custom layout %@",
               (unsigned long)list.count,
               platterNames.count ? [platterNames componentsJoinedByString:@", "] : @"none", circle, room,
               kNavbarCustomLayout ? @"on" : @"off");
+        if ([circle isEqualToString:@"none"]) {
+            SGLog(@"tab bar: no Search tab detected — bar stays one platter until Search is found");
+        }
     }
     if (kNavbarCustomLayout && tabs.tabBar.itemPositioning != UITabBarItemPositioningCentered)
         tabs.tabBar.itemPositioning = UITabBarItemPositioningCentered;
@@ -1490,6 +1533,9 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
         if ([tab isKindOfClass:UISearchTab.class]) {
             UISearchTab *search = (UISearchTab *)tab;
             if (search.automaticallyActivatesSearch) search.automaticallyActivatesSearch = NO;
+            if (search.preferredPlacement != UITabPlacementPinned) search.preferredPlacement = UITabPlacementPinned;
+        } else if (tab.preferredPlacement != UITabPlacementFixed) {
+            tab.preferredPlacement = UITabPlacementFixed;
         }
         UIImage *image = [tab isKindOfClass:UISearchTab.class] ? searchTabImage(shown[i], active) : glyphOf(shown[i], active);
         missing |= !image;

@@ -16,6 +16,7 @@ Release Please still owns `CHANGELOG.beta.md`.
 
 ### Fixes
 
+* Search is pinned as its own trailing circle (`UITabPlacementPinned` + `UISearchTab`) and the other tabs stay Fixed in the leading platter; Search is matched by stock order / locale / icon / id (so Italian Cerca still counts), and the bar rebuilds once Search is found — without a search tab UIKit kept one unified block. Apple Music style mini player is on by default so the accessory and minimize-on-scroll run without flipping a toggle (`TabBar.x`, `NowPlayingBar.x`)
 * a mixed playlist's Play glow is readable again: the softer pass left the ring mask and the layer opacity too low to see on device (`SGRActionRow.m`, `SGRHeaderInfo.m`, `PlaylistHeader.x`)
 
 * the redesigned tab bar always splits Search into the trailing circle (Home and Library in the leading platter), even when the Apple Music style mini player is off; that layout needs `UITabBarController` + `UISearchTab`, which used to run only with the mini player setting, so the bar stayed one unified platter of three tabs (`TabBar.x`)

@@ -10,7 +10,7 @@
 #define SGRHideBarConnect @"spotifyglass.redesign.hide.barConnect"   // the device button on the card
 // The mini player in the tab bar, Apple Music style: the tab bar becomes a UITabBarController's, with
 // the mod's own mini player (MiniPlayer.m) as its bottom accessory, and Spotify's bar goes invisible
-// under it. Off unless set; read at launch.
+// under it. On by default in the redesign; read at launch.
 #define SGRKeyInlinePlayer @"spotifyglass.redesign.inlinePlayer"
 BOOL SGRInlinePlayer(void);
 

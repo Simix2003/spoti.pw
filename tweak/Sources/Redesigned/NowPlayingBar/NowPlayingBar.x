@@ -26,7 +26,9 @@ static __weak UIView *sg_barContainer;
 BOOL SGRInlinePlayer(void) {
     static BOOL on;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ on = SGRedesignedUI() && SGHidden(SGRKeyInlinePlayer); });
+    // On by default in the redesign: the Music-style split bar + mini player accessory.
+    // An explicit off still sticks (SGEnabled: unset is on).
+    dispatch_once(&once, ^{ on = SGRedesignedUI() && SGEnabled(SGRKeyInlinePlayer); });
     return on;
 }
 
