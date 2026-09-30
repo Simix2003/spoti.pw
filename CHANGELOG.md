@@ -2,7 +2,7 @@
 
 ## beta-simix
 
-Entries for the `beta-simix-overnight` fork. Release Please does not version these; they are written so each one can accompany an upstream pull request. Nothing here is compiled or run on a device.
+Entries for the `beta-simix-overnight` fork. Release Please does not version these; they are written so each one can accompany an upstream pull request. Nothing here is compiled or run on a device. Each heading is one task. **Fixed** and **Changed** are code. **Not changed** is a finding and no hook. **Known limits** is what was left.
 
 ### Search tab
 
@@ -19,10 +19,8 @@ Entries for the `beta-simix-overnight` fork. Release Please does not version the
 
 ### Spotify DJ page
 
-* **Not changed.** The DJ playlist page (down-chevron at the top left, ⋯ at the top right, ⋯ opening a plain modal sheet) is not a screen this build already restyles, and no class for it is proven here, so nothing was hooked.
-* **What the redesign already does.** Home's DJ card is only the shelf card `_TtC30Discovery_MediumDensityCardKit9DJMDCView` (`Redesigned/Home/HomeCards.x`): radius and the transcript, not the page it opens. Playlist, album, and artist glass chrome is each tied to a class named in that part's header. Playlist is `FTPViewController` / `SPTFreeTierPlaylistEncoreHeaderViewController` (`Redesigned/Playlist/Playlist.h`); its back button is the system navigation bar, which is already liquid glass inside Spotify's dark stack, and its ⋯ is `SGRPinnedMore` (`Redesigned/Kit/SGRActionRow.h`) over `Components.UI.ContextMenuButton*`. Album and artist pin that same button over their own more control. The glass dialog menu (a system menu grown from the button, Spotify's sheet hidden behind it) is only the Now Playing ⋯ (`Redesigned/Player/PlayerMenu.x`). It claims a sheet that starts within 3 s of that button, and only when the sheet contains `ContextMenu_InternalImpl`. Playlist's ⋯ still opens Spotify's own sheet; `PlaylistMenu.x` only adds Sort and Mix onto that sheet, and only when `SGRPinnedMoreRecentPage()` says the pinned ⋯ opened it.
-* **Why this page is the other one.** A header whose leading control is a down-chevron, rather than the system back button, and whose ⋯ presents a modal sheet immediately, is not `HeaderNavigationBar` on those three pages and is not the Now Playing menu. Treating every sheet as the player menu would steal Share and the other sheets those pages push. No file under `trees/` is in this checkout, and there is no Spotify binary here to read the DJ page's class or the ⋯ selector off, which is what a hook has to be proved against.
-* **Known limits:** Unverified on a phone. A tree of that page (the header class, the two buttons' classes and identifiers, and the sheet class the ⋯ presents) is what would make a glass header and, if the sheet is the same context-menu sheet the player already reads, the same menu.
+* **Not changed.** The DJ playlist (down-chevron at the top left, ⋯ at the top right, opening a plain modal sheet) is not a screen this build restyles, and no class for it is proved here, so nothing was hooked. Home's DJ card is only `_TtC30Discovery_MediumDensityCardKit9DJMDCView` (`Redesigned/Home/HomeCards.x`): radius and the transcript, not the page it opens. Playlist, album, and artist glass are each tied to a class in that part's header. Playlist is `FTPViewController` / `SPTFreeTierPlaylistEncoreHeaderViewController`; its back button is the system navigation bar, and its ⋯ is `SGRPinnedMore` over `Components.UI.ContextMenuButton*`. Album and artist pin that same button. The glass dialog menu is only the Now Playing ⋯ (`Redesigned/Player/PlayerMenu.x`), for a sheet that starts within 3 s of that button and contains `ContextMenu_InternalImpl`. Playlist's ⋯ still opens Spotify's own sheet; `PlaylistMenu.x` adds Mix, then Sort, and only when `SGRPinnedMoreRecentPage()` says the pinned ⋯ opened it.
+* **Known limits:** A header whose leading control is a down-chevron, rather than the system back button, is not `HeaderNavigationBar` on those pages. Treating every sheet as the player menu would steal Share and the other sheets those pages push. No file under `trees/` is in this checkout, and there is no binary to read the DJ page's class or the ⋯ selector from. Unverified on a phone. A tree of that header, the two buttons, and the sheet the ⋯ presents is what a glass header would need.
 
 ### Mini player expand
 
@@ -54,8 +52,7 @@ Entries for the `beta-simix-overnight` fork. Release Please does not version the
 
 ### CarPlay
 
-* **Not changed.** No CarPlay code. A sideloaded tweak cannot grow a CarPlay app: `com.apple.developer.carplay-audio` is restricted, `scripts/install.sh` re-signs with the user's profile, and the tweak cannot add the entitlement or a CarPlay scene. Findings: `docs/carplay-notes.md`.
-* **What already reaches the car, when Spotify's own CarPlay session is up.** `LockScreenLyrics.x` puts the current line in `MPMediaItemPropertyArtist` on `MPNowPlayingInfoCenter`, which is the dictionary `CPNowPlayingTemplate` shows. It does not set `MPMediaItemPropertyLyrics`, and that key is not a lyrics view. CarPlay's audio rules say not to show lyrics on the car screen. Nothing was added to push lines there. Animated artwork stays on the lock screen's iOS 26 keys.
+* **Not changed.** No CarPlay code. A sideloaded tweak cannot grow a CarPlay app: `com.apple.developer.carplay-audio` is restricted, `scripts/install.sh` re-signs with the user's profile, and the tweak cannot add the entitlement or a CarPlay scene. When Spotify's own CarPlay session is up, `LockScreenLyrics.x` already puts the current line in `MPMediaItemPropertyArtist` on `MPNowPlayingInfoCenter`, which is the dictionary `CPNowPlayingTemplate` shows. It does not set `MPMediaItemPropertyLyrics`, and that key is not a lyrics view. CarPlay's audio rules say not to show lyrics on the car screen, so nothing was added to push lines there. Animated artwork stays on the lock screen's iOS 26 keys. Findings: `docs/carplay-notes.md`.
 * **Known limits:** Not run on a car or a phone. No CarPlay class is proved in this checkout, so none was hooked. A head unit may keep the artist from the track change and ignore later line updates.
 
 ### Downloaded songs
