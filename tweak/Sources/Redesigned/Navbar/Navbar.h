@@ -47,6 +47,9 @@ void SGRCancelSearchFocus(void);
 // A search field sharing its row with Cancel, shorter than the Search header's field, is grown to
 // that height. Walks `root` and leaves lists and Mod Settings alone. Cheap enough for a layout pass.
 void SGRRaiseSearchChrome(UIView *root);
+// TabBar.x. The glass bar's content in `space`: the leading platter's left edge and the Search
+// circle's right edge. NO until those views have a size; the now playing bar then uses its own margin.
+BOOL SGRTabBarContentSpan(UIView *space, CGFloat *minX, CGFloat *maxX);
 
 UIViewController *SGRNavbarSettingsPage(void);   // the tab editor, in Mod Settings
 UIViewController *SGRNavbarEditorPage(void);     // the tab editor alone, for the welcome tour

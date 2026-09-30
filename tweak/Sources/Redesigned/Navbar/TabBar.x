@@ -1288,6 +1288,37 @@ static void syncInline(UIView *stockBar) API_AVAILABLE(ios(26.0)) {
     nameScrollView();
 }
 
+// The leading platter's left edge and the Search circle's right edge, in `space`. The platter is the
+// wide glass; the circle is the square glass past it. NO when the bar has not drawn them yet.
+BOOL SGRTabBarContentSpan(UIView *space, CGFloat *minX, CGFloat *maxX) {
+    SGRInlineTabs *tabs = sg_inlineTabs;
+    UITabBar *bar = tabs.viewIfLoaded.window ? tabs.tabBar : nil;
+    if (!bar || !space || bar.bounds.size.width < 80) return NO;
+    CGFloat barW = bar.bounds.size.width;
+    __block CGRect platter = CGRectNull, circle = CGRectNull;
+    __block CGFloat platterW = 0, circleX = -1;
+    SGForEachView(bar, ^(UIView *v) {
+        if (v == bar || v.hidden || v.alpha < 0.01) return;
+        CGSize size = v.bounds.size;
+        if (size.height < 48 || size.height > 74 || size.width < 48 || size.width > barW - 24) return;
+        CGRect rect = [space convertRect:v.bounds fromView:v];
+        BOOL round = fabs(size.width - size.height) <= 10;
+        if (!round && size.width >= size.height * 1.6 && size.width > platterW) {
+            platterW = size.width;
+            platter = rect;
+        }
+        if (round && CGRectGetMaxX(rect) > circleX) {
+            circleX = CGRectGetMaxX(rect);
+            circle = rect;
+        }
+    });
+    if (CGRectIsNull(platter) || CGRectIsNull(circle) || !minX || !maxX) return NO;
+    if (CGRectGetMaxX(circle) < CGRectGetMaxX(platter) + 4) return NO;
+    *minX = CGRectGetMinX(platter);
+    *maxX = CGRectGetMaxX(circle);
+    return *maxX > *minX + 40;
+}
+
 // The scroll view UIKit should minimize the bar by is Spotify's page in front: a vertical list over most
 // of the screen inside the tab bar container, the innermost when one holds another. Horizontal pagers
 // are left out. Spotify's first page is on screen before the bar is, so the container is searched once
